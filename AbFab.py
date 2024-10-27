@@ -140,7 +140,7 @@ def generate_spatial_filter(H, kn, ks, azimuth, filter_size=25):
     return spatial_filter
 
 # Generate synthetic bathymetry using a spatial filter
-def generate_bathymetry_spatial_filter(grid_size, seafloor_age, sediment_thickness, params):
+def generate_bathymetry_spatial_filter(seafloor_age, sediment_thickness, params):
     """
     Generate synthetic bathymetry using a spatially varying filter based on von Kármán model.
     
@@ -150,18 +150,18 @@ def generate_bathymetry_spatial_filter(grid_size, seafloor_age, sediment_thickne
     params: Dictionary containing base abyssal hill parameters
             e.g., {'H': H, 'kn': kn, 'ks': ks, 'D': D}
     """
-    ny, nx = grid_size
+    ny, nx = seafloor_age.shape
     
     print(ny, nx)
     
     # Generate random noise field
-    random_field = generate_random_field(grid_size)
+    random_field = generate_random_field((ny,nx))
     
     # Calculate azimuth from seafloor age gradient
     azimuth = calculate_azimuth_from_age(seafloor_age)
     
     # Initialize the output bathymetry array
-    bathymetry = np.zeros(grid_size)
+    bathymetry = np.zeros((ny,nx))
     
     # Loop over the grid to apply a spatial filter at each point
     for i in range(ny):
