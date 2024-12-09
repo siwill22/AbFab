@@ -2,6 +2,7 @@ import numpy as np
 from scipy.fft import fft2, ifft2
 from scipy.ndimage import convolve
 from scipy.signal import oaconvolve
+import xarray as xr
 
 
 
@@ -140,7 +141,7 @@ def generate_spatial_filter(H, kn, ks, azimuth, filter_size=25):
     return spatial_filter
 
 # Generate synthetic bathymetry using a spatial filter
-def generate_bathymetry_spatial_filter(seafloor_age, sediment_thickness, params):
+def generate_bathymetry_spatial_filter(seafloor_age, sediment_thickness, params, random_field=None):
     """
     Generate synthetic bathymetry using a spatially varying filter based on von Kármán model.
     
@@ -151,11 +152,10 @@ def generate_bathymetry_spatial_filter(seafloor_age, sediment_thickness, params)
             e.g., {'H': H, 'kn': kn, 'ks': ks, 'D': D}
     """
     ny, nx = seafloor_age.shape
-    
-    print(ny, nx)
-    
+        
     # Generate random noise field
-    random_field = generate_random_field((ny,nx))
+    #if random_field is None:
+    #    random_field = generate_random_field((ny,nx))
     
     # Calculate azimuth from seafloor age gradient
     azimuth = calculate_azimuth_from_age(seafloor_age)
@@ -173,17 +173,70 @@ def generate_bathymetry_spatial_filter(seafloor_age, sediment_thickness, params)
             azimuth_local = azimuth[i, j]
 
             # Modify the parameters based on sediment thickness
+            #print(H_local, kn_local, ks_local, sediment_thickness[i, j])
             H_local, kn_local, ks_local = modify_by_sediment(H_local, kn_local, ks_local, sediment_thickness[i, j])
-
+            #print(H_local, kn_local, ks_local)
+            
             # Generate the local filter
             spatial_filter = generate_spatial_filter(H_local, kn_local, ks_local, azimuth_local)
 
             # Apply the filter to the random noise field at location (i, j)
             # Convolve the filter with the random field (centered at the current point)
             #filtered_value = convolve(random_field, spatial_filter, mode='constant', cval=0.0)[i, j]
+            #print(random_field.shape, spatial_filter.shape, i, j)
             filtered_value = oaconvolve(random_field, spatial_filter, mode='same')[i, j]
+            #print(filtered_value)
+            #print(random_field * spatial_filter)
+            #break
 
             # Store the filtered value in the bathymetry map
             bathymetry[i, j] = filtered_value
+    print(300)
 
     return bathymetry
+
+
+
+def extend_longitude_range(da):
+    """
+    Extend a DataArray's longitude range from -180:180 to -190:190
+    
+    Parameters:
+    -----------
+    da : xarray.DataArray
+        Input DataArray with longitude coordinates from -180 to 180
+    
+    Returns:
+    --------
+    xarray.DataArray
+        Extended DataArray with longitude range -190 to 190
+    """
+    # Identify the longitude dimension
+    lon_dim = [dim for dim in da.dims if 'lon' in dim.lower()][0]
+    
+    # Get original longitude coordinates
+    original_lons = da[lon_dim].values
+    
+    # Create new longitude coordinates
+    new_lons = np.concatenate([
+        original_lons - 360,  # Add negative extension
+        original_lons,         # Keep original data
+        original_lons + 360    # Add positive extension
+    ])
+    
+    # Create new data array with extended longitude
+    extended_data = np.concatenate([
+        da.sel({lon_dim: slice(original_lons.min(), original_lons.max())}),
+        da,
+        da.sel({lon_dim: slice(original_lons.min(), original_lons.max())})
+    ], axis=da.dims.index(lon_dim))
+    
+    # Create new DataArray
+    extended_da = xr.DataArray(
+        extended_data, 
+        coords={**da.coords, lon_dim: new_lons},
+        dims=da.dims,
+        attrs=da.attrs
+    )
+    
+    return extended_da
