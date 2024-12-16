@@ -191,7 +191,6 @@ def generate_bathymetry_spatial_filter(seafloor_age, sediment_thickness, params,
 
             # Store the filtered value in the bathymetry map
             bathymetry[i, j] = filtered_value
-    print(300)
 
     return bathymetry
 
