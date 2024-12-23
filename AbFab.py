@@ -42,9 +42,9 @@ def modify_by_sediment(H, kn, ks, sediment_thickness):
     Modify abyssal hill parameters based on sediment thickness.
     Sediment drape reduces the rms height (H) and increases the width (kn, ks).
     """
-    H_sed = np.maximum(H - sediment_thickness / 2, 0)  # Modify H based on sediment thickness
-    kn_sed = kn + 1.3 * kn * (sediment_thickness / H)  # Modify kn based on sediment
-    ks_sed = ks + 1.3 * ks * (sediment_thickness / H)  # Modify ks similarly
+    H_sed = np.maximum(H - sediment_thickness / 2, 0.01)  # Modify H based on sediment thickness
+    kn_sed = kn + 1.3 * kn * (sediment_thickness / H_sed)  # Modify kn based on sediment
+    ks_sed = ks + 1.3 * ks * (sediment_thickness / H_sed)  # Modify ks similarly
     return H_sed, kn_sed, ks_sed
 
 # Azimuth calculation from seafloor age gradient
