@@ -173,9 +173,7 @@ def generate_bathymetry_spatial_filter(seafloor_age, sediment_thickness, params,
             azimuth_local = azimuth[i, j]
 
             # Modify the parameters based on sediment thickness
-            #print(H_local, kn_local, ks_local, sediment_thickness[i, j])
             H_local, kn_local, ks_local = modify_by_sediment(H_local, kn_local, ks_local, sediment_thickness[i, j])
-            #print(H_local, kn_local, ks_local)
             
             # Generate the local filter
             spatial_filter = generate_spatial_filter(H_local, kn_local, ks_local, azimuth_local)
@@ -183,11 +181,7 @@ def generate_bathymetry_spatial_filter(seafloor_age, sediment_thickness, params,
             # Apply the filter to the random noise field at location (i, j)
             # Convolve the filter with the random field (centered at the current point)
             #filtered_value = convolve(random_field, spatial_filter, mode='constant', cval=0.0)[i, j]
-            #print(random_field.shape, spatial_filter.shape, i, j)
             filtered_value = oaconvolve(random_field, spatial_filter, mode='same')[i, j]
-            #print(filtered_value)
-            #print(random_field * spatial_filter)
-            #break
 
             # Store the filtered value in the bathymetry map
             bathymetry[i, j] = filtered_value
