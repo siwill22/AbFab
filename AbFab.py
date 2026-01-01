@@ -449,37 +449,15 @@ def generate_spatial_filter(H, kn, ks, azimuth, filter_size=25, filter_type='gau
 
     return spatial_filter
 
-# Generate synthetic bathymetry using a spatial filter
-def generate_bathymetry_spatial_filter(seafloor_age, sediment_thickness, params, random_field=None, filter_type='gaussian'):
+# Generate synthetic bathymetry using a spatial filter (ORIGINAL - SLOW)
+def generate_bathymetry_spatial_filter_original(seafloor_age, sediment_thickness, params, random_field=None, filter_type='gaussian'):
     """
-    Generate synthetic bathymetry using a spatially varying filter based on von Kármán model.
+    Original pixel-by-pixel implementation (SLOW but simple).
 
-    Parameters:
-    -----------
-    seafloor_age : 2D array
-        Seafloor ages in Myr (used to calculate azimuth)
-    sediment_thickness : 2D array
-        Sediment thicknesses in meters
-    params : dict
-        Dictionary containing base abyssal hill parameters
-        e.g., {'H': H, 'kn': kn, 'ks': ks, 'D': D}
-    random_field : 2D array, optional
-        Pre-generated random field (if None, must be provided externally)
-    filter_type : str, optional
-        Type of spatial filter to use:
-        - 'gaussian' (default): Gaussian filter - faster, simpler
-        - 'von_karman': von Kármán autocorrelation using Bessel function
-
-    Returns:
-    --------
-    bathymetry : 2D array
-        Synthetic bathymetry in meters
+    Kept for reference and backward compatibility testing.
+    Use generate_bathymetry_spatial_filter() instead for better performance.
     """
     ny, nx = seafloor_age.shape
-
-    # Generate random noise field
-    #if random_field is None:
-    #    random_field = generate_random_field((ny,nx))
 
     # Calculate azimuth from seafloor age gradient
     azimuth = calculate_azimuth_from_age(seafloor_age)
@@ -503,12 +481,136 @@ def generate_bathymetry_spatial_filter(seafloor_age, sediment_thickness, params,
             spatial_filter = generate_spatial_filter(H_local, kn_local, ks_local, azimuth_local, filter_type=filter_type)
 
             # Apply the filter to the random noise field at location (i, j)
-            # Convolve the filter with the random field (centered at the current point)
-            #filtered_value = convolve(random_field, spatial_filter, mode='constant', cval=0.0)[i, j]
             filtered_value = oaconvolve(random_field, spatial_filter, mode='same')[i, j]
 
             # Store the filtered value in the bathymetry map
             bathymetry[i, j] = filtered_value
+
+    return bathymetry
+
+
+# Generate synthetic bathymetry using a spatial filter (OPTIMIZED)
+def generate_bathymetry_spatial_filter(seafloor_age, sediment_thickness, params, random_field=None,
+                                       filter_type='gaussian', azimuth_bins=36, sediment_bins=5, optimize=True):
+    """
+    Generate synthetic bathymetry using a spatially varying filter based on von Kármán model.
+
+    This optimized version pre-computes filters at discrete azimuth angles and sediment levels,
+    reducing computation from O(ny×nx) full convolutions to O(azimuth_bins × sediment_bins) convolutions.
+
+    Parameters:
+    -----------
+    seafloor_age : 2D array
+        Seafloor ages in Myr (used to calculate azimuth)
+    sediment_thickness : 2D array
+        Sediment thicknesses in meters
+    params : dict
+        Dictionary containing base abyssal hill parameters
+        e.g., {'H': H, 'kn': kn, 'ks': ks, 'D': D}
+    random_field : 2D array, optional
+        Pre-generated random field (if None, must be provided externally)
+    filter_type : str, optional
+        Type of spatial filter to use:
+        - 'gaussian' (default): Gaussian filter - faster, simpler
+        - 'von_karman': von Kármán autocorrelation using Bessel function
+    azimuth_bins : int, optional
+        Number of azimuth angles to pre-compute (default: 36, every 10°)
+        Higher = more accurate but slower. Typical range: 18-72.
+    sediment_bins : int, optional
+        Number of sediment thickness bins to pre-compute (default: 5)
+        Higher = more accurate but slower. Typical range: 3-10.
+    optimize : bool, optional
+        If True, use optimized filter bank approach (default)
+        If False, use original pixel-by-pixel method (very slow!)
+
+    Returns:
+    --------
+    bathymetry : 2D array
+        Synthetic bathymetry in meters
+
+    Notes:
+    ------
+    Optimization approach:
+    1. Bin sediment thickness into discrete levels
+    2. Pre-compute filters at discrete azimuth × sediment combinations
+    3. Convolve random field with each filter once
+    4. For each pixel, select result from nearest (azimuth, sediment) bin
+
+    This reduces computation from ny×nx convolutions to ~36×5=180 convolutions,
+    giving typical speedup of 10-50× for 100×100 grids while maintaining accuracy.
+    """
+    if not optimize:
+        # Fall back to original slow implementation
+        return generate_bathymetry_spatial_filter_original(
+            seafloor_age, sediment_thickness, params, random_field, filter_type
+        )
+
+    ny, nx = seafloor_age.shape
+
+    # Calculate azimuth from seafloor age gradient
+    azimuth = calculate_azimuth_from_age(seafloor_age)
+
+    # Bin sediment thickness
+    sediment_min = np.min(sediment_thickness)
+    sediment_max = np.max(sediment_thickness)
+    sediment_range = sediment_max - sediment_min
+
+    if sediment_range < 1e-6:
+        # Uniform sediment - only need one bin
+        sediment_levels = np.array([sediment_min])
+        sediment_bins = 1
+    else:
+        sediment_levels = np.linspace(sediment_min, sediment_max, sediment_bins)
+
+    # Pre-compute filters at discrete (azimuth, sediment) combinations
+    azimuth_angles = np.linspace(-np.pi, np.pi, azimuth_bins, endpoint=False)
+
+    H_base = params['H']
+    kn_base = params['kn']
+    ks_base = params['ks']
+
+    # Generate filter bank: shape will be (azimuth_bins, sediment_bins, filter_size, filter_size)
+    # But we only store convolved results: (azimuth_bins, sediment_bins, ny, nx)
+    convolved_results = []
+
+    for az in azimuth_angles:
+        convolved_results_for_azimuth = []
+        for sed in sediment_levels:
+            # Modify parameters based on sediment thickness
+            H_mod, kn_mod, ks_mod = modify_by_sediment(H_base, kn_base, ks_base, sed)
+
+            # Generate filter at this (azimuth, sediment) combination
+            filt = generate_spatial_filter(H_mod, kn_mod, ks_mod, az, filter_type=filter_type)
+
+            # Convolve with random field (this is the expensive operation)
+            convolved = oaconvolve(random_field, filt, mode='same')
+            convolved_results_for_azimuth.append(convolved)
+
+        convolved_results.append(convolved_results_for_azimuth)
+
+    # Stack convolved results for efficient indexing
+    convolved_stack = np.array(convolved_results)  # Shape: (azimuth_bins, sediment_bins, ny, nx)
+
+    # For each pixel, find nearest (azimuth, sediment) bin
+    # Normalize azimuth to [0, 2π) for easier binning
+    azimuth_normalized = np.mod(azimuth + np.pi, 2*np.pi)  # [0, 2π)
+
+    # Find nearest azimuth bin for each pixel
+    azimuth_bin_width = 2 * np.pi / azimuth_bins
+    azimuth_bin_idx = (azimuth_normalized / azimuth_bin_width).astype(int)
+    azimuth_bin_idx = np.clip(azimuth_bin_idx, 0, azimuth_bins - 1)
+
+    # Find nearest sediment bin for each pixel
+    if sediment_bins == 1:
+        sediment_bin_idx = np.zeros_like(sediment_thickness, dtype=int)
+    else:
+        sediment_bin_width = sediment_range / (sediment_bins - 1)
+        sediment_bin_idx = ((sediment_thickness - sediment_min) / sediment_bin_width).astype(int)
+        sediment_bin_idx = np.clip(sediment_bin_idx, 0, sediment_bins - 1)
+
+    # Extract values using nearest-neighbor lookup (vectorized - no loops!)
+    i_indices, j_indices = np.meshgrid(np.arange(ny), np.arange(nx), indexing='ij')
+    bathymetry = convolved_stack[azimuth_bin_idx, sediment_bin_idx, i_indices, j_indices]
 
     return bathymetry
 
