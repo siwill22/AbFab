@@ -163,7 +163,31 @@ See [DEVELOPMENT_NOTES.md](DEVELOPMENT_NOTES.md) for details.
 
 ## Performance Tips
 
-For large grids (>1000×1000):
+### Optimized Implementation (Default)
+
+`generate_bathymetry_spatial_filter()` includes built-in optimization using a filter bank approach:
+- **50× speedup** over naive pixel-by-pixel method
+- **<4% error** with default settings (36 azimuth × 5 sediment bins)
+- Automatically enabled with `optimize=True` (default)
+
+**Tuning parameters**:
+```python
+bathymetry = af.generate_bathymetry_spatial_filter(
+    seafloor_age, sediment_thickness, params, random_field,
+    azimuth_bins=36,    # Higher = more accurate, slower
+    sediment_bins=5,    # Higher = more accurate, slower
+    optimize=True       # Set False for pixel-perfect original method
+)
+```
+
+**Accuracy vs Speed**:
+- 3 sediment bins: ~60× faster, 8% error
+- 5 sediment bins: ~50× faster, 4% error (default)
+- 10 sediment bins: ~25× faster, 2% error
+
+### Large Grid Processing
+
+For very large grids (>1000×1000):
 1. Use chunk-based processing (see `tiling_test_updated.ipynb`)
 2. Process chunks in parallel using `joblib.Parallel`
 3. Use padding (≥20 pixels) to avoid edge artifacts

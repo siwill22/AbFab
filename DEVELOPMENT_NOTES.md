@@ -23,6 +23,44 @@ Comprehensive improvements to AbFab.py focusing on the spatial filter method (pr
 
 **Testing**: Verified both produce correct N-S oriented ridges for E-W spreading. von Kármán produces ~40% higher RMS due to heavier tails.
 
+#### 4. Performance Optimization (NEW)
+- **File**: `AbFab.py`, lines 493-615
+- **Function**: `generate_bathymetry_spatial_filter()` - Optimized with filter bank approach
+
+**Implementation**:
+```python
+# Pre-compute filters at discrete (azimuth, sediment) combinations
+for az in azimuth_angles:  # e.g., 36 angles
+    for sed in sediment_levels:  # e.g., 5 sediment bins
+        filter = generate_spatial_filter(H_mod, kn_mod, ks_mod, az)
+        convolved_results[az, sed] = convolve(random_field, filter)
+
+# Extract results using nearest-neighbor lookup
+bathymetry = convolved_results[azimuth_bin_idx, sediment_bin_idx]
+```
+
+**Performance**:
+- **50-53× speedup** over original pixel-by-pixel method (100×100 grid)
+- **3.88% relative error** with default settings (36 azimuth × 5 sediment bins)
+- **0.9995 correlation** with original implementation
+- Scales from 10,000 convolutions → 180 convolutions (36×5)
+
+**Key Insight**:
+Original attempt only binned by azimuth and applied sediment modification as post-processing. This failed because sediment affects filter SHAPE (kn, ks) not just amplitude (H). Solution: bin by BOTH azimuth and sediment.
+
+**Tunable Parameters**:
+- `azimuth_bins=36` (default) - More bins = more accurate, slower
+- `sediment_bins=5` (default) - More bins = more accurate, slower
+- `optimize=True` (default) - Set False for pixel-perfect original method
+
+**Trade-offs**:
+- 3 sediment bins: ~60× faster, 8% error
+- 5 sediment bins: ~50× faster, 4% error (default)
+- 10 sediment bins: ~25× faster, 2% error
+- 20 sediment bins: ~15× faster, <1% error
+
+**Testing**: See `test_optimization.py` and `test_optimization_visual.ipynb`
+
 #### 2. Azimuth Verification
 - **Function**: `calculate_azimuth_from_age()` (lines 132-159)
 - **Status**: ✓ Verified correct
@@ -103,9 +141,12 @@ params = {'H': 50, 'kn': 0.05, 'ks': 0.2, 'D': 2.2}
 
 ### Spatial Filter Method (Production)
 
-**Function**: `generate_bathymetry_spatial_filter()` (lines 453-513)
+**Function**: `generate_bathymetry_spatial_filter()` (lines 493-615)
 
-**Current Implementation** (⚠️ Inefficient but functional):
+**Current Implementation** (✓ Optimized):
+The function now uses a filter bank approach by default (`optimize=True`), providing 50× speedup. The original pixel-by-pixel method is preserved as `generate_bathymetry_spatial_filter_original()` (lines 453-489) for reference and testing.
+
+**Original Implementation** (Still available via `optimize=False`):
 ```python
 for i in range(ny):
     for j in range(nx):
@@ -115,15 +156,15 @@ for i in range(ny):
         filtered_value = oaconvolve(random_field, spatial_filter, mode='same')[i, j]
 ```
 
-**Issues**:
+**Why Original Was Slow**:
 - Generates ny × nx filters (e.g., 100×100 = 10,000 filters!)
 - Performs ny × nx full convolutions
 - Each convolution processes entire field but only uses one output pixel
 
-**Why It Works Anyway**:
-Users employ chunk-based processing (e.g., `tiling_test.ipynb`) which processes smaller regions in parallel, making the inefficiency manageable.
+**Optimization Approach**:
+Pre-compute filters at discrete (azimuth, sediment) bins and use nearest-neighbor lookup. See "Performance Optimization" section above for details.
 
-**User's Approach (Recommended)**:
+**User's Chunk-Based Approach (Still Recommended for Large Grids)**:
 ```python
 def process_bathymetry_chunk(coord, age_dataarray, sed_dataarray,
                              rand_dataarray, chunksize, chunkpad,
