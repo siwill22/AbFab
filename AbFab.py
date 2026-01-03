@@ -212,22 +212,29 @@ def calculate_spreading_rate_from_age(seafloor_age, grid_spacing_km=1.0):
     return spreading_rate
 
 
-def spreading_rate_to_params(spreading_rate):
+def spreading_rate_to_params(spreading_rate, base_params=None):
     """
-    Convert spreading rate to abyssal hill parameters using empirical relationships.
+    Apply spreading rate scaling to base parameters using empirical relationships.
 
-    Based on Figure 1 from Goff & Arbic (2010), which shows relationships between
-    half-spreading rate and abyssal hill parameters from observational data.
+    This function allows you to control baseline abyssal hill characteristics while
+    still applying physically-motivated spreading rate trends.
 
     Parameters:
     -----------
     spreading_rate : float or array
         Half-spreading rate in mm/yr
+    base_params : dict, optional
+        Base parameters to scale. If None, uses default values.
+        Dictionary containing:
+        - 'H': Base RMS height in meters (default: 250m)
+        - 'lambda_n': Base wavelength perpendicular to ridge in km (default: 6.5km)
+        - 'lambda_s': Base wavelength parallel to ridge in km (default: 16km)
+        - 'D': Base fractal dimension (default: 2.2)
 
     Returns:
     --------
     params : dict
-        Dictionary containing:
+        Dictionary containing spreading-rate-modified parameters:
         - 'H': RMS height in meters
         - 'lambda_n': characteristic wavelength perpendicular to ridge (km)
         - 'lambda_s': characteristic wavelength parallel to ridge (km)
@@ -235,63 +242,84 @@ def spreading_rate_to_params(spreading_rate):
 
     Notes:
     ------
-    **Physical Units Design:**
-    lambda_n and lambda_s are now in PHYSICAL units (kilometers), representing
-    the actual characteristic wavelengths of abyssal hills. This makes them:
-    - Directly comparable to observations in Goff & Arbic (2010)
-    - Independent of grid resolution
-    - Physically meaningful and interpretable
+    **Spreading Rate Scaling:**
+    Based on empirical relationships from Goff & Arbic (2010) Figure 1:
 
-    **Empirical relationships** from Goff & Arbic (2010) Figure 1:
-    - H DECREASES with spreading rate: ~300m at 10 mm/yr to ~100m at 100 mm/yr
-      (faster spreading → lower amplitude due to hotter, weaker lithosphere)
-    - Abyssal hill wavelength INCREASES with spreading rate
-      (faster spreading → smoother, wider features due to more frequent resurfacing)
-    - Wavelengths in both directions increase with spreading rate
-    - D relatively constant around 2.2
+    1. **H (amplitude) scaling:**
+       - DECREASES with spreading rate
+       - Faster spreading → hotter, weaker lithosphere → lower amplitude
+       - Scale factor: f_H = 1.3 - 0.01 * u
+       - At 10 mm/yr: f_H ≈ 1.2 (20% higher)
+       - At 50 mm/yr: f_H ≈ 0.8 (20% lower)
+       - At 100 mm/yr: f_H ≈ 0.3 (70% lower)
 
-    **Interpretation:**
-    - lambda_n (smaller ~2-12 km): characteristic WIDTH (normal to ridge)
-    - lambda_s (larger ~5-30 km): characteristic LENGTH (parallel to ridge)
-    - Since lambda_s > lambda_n, ridges are elongated parallel to ridge axis
+    2. **Wavelength (lambda_n, lambda_s) scaling:**
+       - INCREASES with spreading rate
+       - Faster spreading → more frequent resurfacing → smoother, wider features
+       - Scale factor: f_λ = 0.3 + 0.014 * u
+       - At 10 mm/yr: f_λ ≈ 0.44 (56% smaller)
+       - At 50 mm/yr: f_λ ≈ 1.0 (unchanged)
+       - At 100 mm/yr: f_λ ≈ 1.7 (70% larger)
 
-    **Typical values (enhanced variation for visibility):**
-    - Slow spreading (10 mm/yr): H ≈ 325m, lambda_n ≈ 2 km, lambda_s ≈ 5 km
-    - Medium spreading (40 mm/yr): H ≈ 250m, lambda_n ≈ 5.4 km, lambda_s ≈ 13 km
-    - Fast spreading (100 mm/yr): H ≈ 100m, lambda_n ≈ 12 km, lambda_s ≈ 30 km
+    3. **D (fractal dimension) scaling:**
+       - Slightly DECREASES with spreading rate
+       - Relatively small effect
+       - Additive shift: δD = -0.003 * (u - 50)
+
+    **Example:**
+    Base params: H=200m, λ_n=5km, λ_s=15km, D=2.2
+
+    At 10 mm/yr (slow):  H=240m, λ_n=2.2km, λ_s=6.6km, D=2.32
+    At 50 mm/yr (medium): H=160m, λ_n=5.0km, λ_s=15.0km, D=2.2
+    At 100 mm/yr (fast): H=60m, λ_n=8.5km, λ_s=25.5km, D=2.05
     """
+    # Set default base parameters if not provided
+    if base_params is None:
+        base_params = {
+            'H': 250.0,      # meters
+            'lambda_n': 6.5,  # km (width, normal to ridge)
+            'lambda_s': 16.0, # km (length, parallel to ridge)
+            'D': 2.2
+        }
+
+    # Extract base values
+    H_base = base_params['H']
+    lambda_n_base = base_params['lambda_n']
+    lambda_s_base = base_params['lambda_s']
+    D_base = base_params['D']
+
     # Convert spreading rate to array for vectorized operations
     u = np.atleast_1d(spreading_rate)
 
-    # Empirical relationships (approximate fits to Figure 1 data)
-    # RMS height H (meters): DECREASES with spreading rate
-    # Faster spreading → smoother seafloor with lower amplitude
-    # At u=10 mm/yr: H~300m, at u=100 mm/yr: H~100m
-    H = 350.0 - 2.5 * u  # H in meters
-    H = np.clip(H, 50, 400)  # Reasonable bounds
+    # Scaling factors based on Goff & Arbic (2010) empirical relationships
+    # Reference spreading rate: 50 mm/yr (where scale factors ≈ 1.0)
+    u_ref = 50.0
 
-    # Characteristic wavelengths in PHYSICAL units (kilometers)
-    # Based on Goff & Arbic (2010) observations
-    # NOTE: "n" = normal (width), "s" = strike (length) in their terminology
+    # H scale factor: DECREASES with spreading rate
+    # At u=10: ~1.2, at u=50: ~0.8, at u=100: ~0.3
+    f_H = 1.3 - 0.01 * u
+    f_H = np.clip(f_H, 0.2, 1.5)
 
-    # lambda_n: characteristic WIDTH (km) - SMALLER value
-    # Wavelength in direction normal to ridge (across the hills)
-    # INCREASES with spreading rate (faster spreading → smoother, wider features)
-    # Slow (10 mm/yr): ~2 km, Fast (100 mm/yr): ~12 km (6× variation)
-    lambda_n = 1.0 + 0.11 * u  # km
-    lambda_n = np.clip(lambda_n, 1, 13)
+    # Wavelength scale factor: INCREASES with spreading rate
+    # At u=10: ~0.44, at u=50: ~1.0, at u=100: ~1.7
+    f_lambda = 0.3 + 0.014 * u
+    f_lambda = np.clip(f_lambda, 0.3, 2.0)
 
-    # lambda_s: characteristic LENGTH (km) - LARGER value
-    # Wavelength in direction parallel to ridge (along the hills)
-    # Also increases with spreading rate
-    # Slow (10 mm/yr): ~5 km, Fast (100 mm/yr): ~30 km (6× variation)
-    lambda_s = 2.0 + 0.28 * u  # km
-    lambda_s = np.clip(lambda_s, 2, 32)
+    # D additive shift: slight decrease with spreading rate
+    delta_D = -0.003 * (u - u_ref)
+    delta_D = np.clip(delta_D, -0.3, 0.3)
 
-    # Fractal dimension D: relatively constant around 2.2
-    # Slightly lower at faster spreading rates
-    D = 2.25 - 0.003 * u
-    D = np.clip(D, 2.0, 2.3)
+    # Apply scaling
+    H = H_base * f_H
+    lambda_n = lambda_n_base * f_lambda
+    lambda_s = lambda_s_base * f_lambda
+    D = D_base + delta_D
+
+    # Apply reasonable bounds
+    H = np.clip(H, 10, 500)
+    lambda_n = np.clip(lambda_n, 0.5, 30)
+    lambda_s = np.clip(lambda_s, 1.0, 60)
+    D = np.clip(D, 2.0, 2.4)
 
     # Return as dictionary (or scalar values if input was scalar)
     if np.isscalar(spreading_rate):
@@ -527,23 +555,28 @@ def generate_bathymetry_spatial_filter_original(seafloor_age, sediment_thickness
 
 # Generate synthetic bathymetry using a spatial filter (OPTIMIZED)
 def generate_bathymetry_spatial_filter(seafloor_age, sediment_thickness, params, grid_spacing_km, random_field=None,
-                                       filter_type='gaussian', azimuth_bins=36, sediment_bins=5, optimize=True):
+                                       filter_type='gaussian', azimuth_bins=36, sediment_bins=5,
+                                       spreading_rate_bins=5, base_params=None, optimize=True):
     """
     Generate synthetic bathymetry using a spatially varying filter based on von Kármán model.
 
-    This optimized version pre-computes filters at discrete azimuth angles and sediment levels,
-    reducing computation from O(ny×nx) full convolutions to O(azimuth_bins × sediment_bins) convolutions.
+    This optimized version pre-computes filters at discrete azimuth angles, sediment levels,
+    and spreading rates, reducing computation from O(ny×nx) full convolutions to
+    O(azimuth_bins × sediment_bins × spreading_rate_bins) convolutions.
 
     Parameters:
     -----------
     seafloor_age : 2D array
-        Seafloor ages in Myr (used to calculate azimuth)
+        Seafloor ages in Myr (used to calculate azimuth and spreading rate)
     sediment_thickness : 2D array
         Sediment thicknesses in meters
     params : dict
         Dictionary containing base abyssal hill parameters
         e.g., {'H': H, 'lambda_n': lambda_n, 'lambda_s': lambda_s, 'D': D}
         where H is in meters and lambda_n, lambda_s are in km
+
+        If base_params is provided, these params are IGNORED and base_params is used instead.
+        If base_params is None, these params are used as the base for spreading rate scaling.
     grid_spacing_km : float
         Grid spacing in kilometers (e.g., 1.85 km for 1 arcmin at equator)
     random_field : 2D array, optional
@@ -558,6 +591,13 @@ def generate_bathymetry_spatial_filter(seafloor_age, sediment_thickness, params,
     sediment_bins : int, optional
         Number of sediment thickness bins to pre-compute (default: 5)
         Higher = more accurate but slower. Typical range: 3-10.
+    spreading_rate_bins : int, optional
+        Number of spreading rate bins to pre-compute (default: 5)
+        Higher = more accurate but slower. Typical range: 3-10.
+        Set to 1 to disable spreading rate variation (use single params).
+    base_params : dict, optional
+        Base parameters to use for spreading rate scaling. If None, uses params.
+        Dictionary with keys: 'H', 'lambda_n', 'lambda_s', 'D'
     optimize : bool, optional
         If True, use optimized filter bank approach (default)
         If False, use original pixel-by-pixel method (very slow!)
@@ -570,13 +610,19 @@ def generate_bathymetry_spatial_filter(seafloor_age, sediment_thickness, params,
     Notes:
     ------
     Optimization approach:
-    1. Bin sediment thickness into discrete levels
-    2. Pre-compute filters at discrete azimuth × sediment combinations
-    3. Convolve random field with each filter once
-    4. For each pixel, select result from nearest (azimuth, sediment) bin
+    1. Calculate spreading rate from seafloor age gradient
+    2. Bin spreading rate, sediment thickness, and azimuth into discrete levels
+    3. Pre-compute filters at discrete (azimuth, sediment, spreading_rate) combinations
+    4. Convolve random field with each filter once
+    5. For each pixel, select result from nearest (azimuth, sediment, spreading_rate) bin
 
-    This reduces computation from ny×nx convolutions to ~36×5=180 convolutions,
-    giving typical speedup of 10-50× for 100×100 grids while maintaining accuracy.
+    This reduces computation from ny×nx convolutions to ~36×5×5=900 convolutions,
+    giving typical speedup of 5-20× for 100×100 grids while maintaining accuracy.
+
+    Spreading rate variation:
+    - If spreading_rate_bins > 1, parameters vary spatially with spreading rate
+    - Each bin gets scaled parameters via spreading_rate_to_params(rate, base_params)
+    - This allows smooth spatial transitions in abyssal hill characteristics
     """
     if not optimize:
         # Fall back to original slow implementation
@@ -586,8 +632,38 @@ def generate_bathymetry_spatial_filter(seafloor_age, sediment_thickness, params,
 
     ny, nx = seafloor_age.shape
 
+    # Determine base parameters for spreading rate scaling
+    if base_params is None:
+        base_params = params
+
     # Calculate azimuth from seafloor age gradient
     azimuth = calculate_azimuth_from_age(seafloor_age)
+
+    # Calculate spreading rate from seafloor age gradient
+    spreading_rate = calculate_spreading_rate_from_age(seafloor_age, grid_spacing_km)
+
+    # Handle NaN values in spreading rate (e.g., from uniform age)
+    spreading_rate_valid = spreading_rate[~np.isnan(spreading_rate)]
+    if len(spreading_rate_valid) == 0:
+        # No valid spreading rate - use base params everywhere
+        spreading_rate = np.full_like(seafloor_age, 50.0)  # Default to 50 mm/yr
+    else:
+        # Fill NaN values with median
+        spreading_rate = np.where(np.isnan(spreading_rate),
+                                  np.nanmedian(spreading_rate),
+                                  spreading_rate)
+
+    # Bin spreading rate
+    sr_min = np.min(spreading_rate)
+    sr_max = np.max(spreading_rate)
+    sr_range = sr_max - sr_min
+
+    if sr_range < 1e-6 or spreading_rate_bins == 1:
+        # Uniform spreading rate or disabled - only need one bin
+        spreading_rate_levels = np.array([np.mean(spreading_rate)])
+        spreading_rate_bins = 1
+    else:
+        spreading_rate_levels = np.linspace(sr_min, sr_max, spreading_rate_bins)
 
     # Bin sediment thickness
     sediment_min = np.min(sediment_thickness)
@@ -601,36 +677,43 @@ def generate_bathymetry_spatial_filter(seafloor_age, sediment_thickness, params,
     else:
         sediment_levels = np.linspace(sediment_min, sediment_max, sediment_bins)
 
-    # Pre-compute filters at discrete (azimuth, sediment) combinations
+    # Pre-compute filters at discrete (azimuth, sediment, spreading_rate) combinations
     azimuth_angles = np.linspace(-np.pi, np.pi, azimuth_bins, endpoint=False)
 
-    H_base = params['H']
-    lambda_n_base = params['lambda_n']
-    lambda_s_base = params['lambda_s']
-
-    # Generate filter bank: shape will be (azimuth_bins, sediment_bins, filter_size, filter_size)
-    # But we only store convolved results: (azimuth_bins, sediment_bins, ny, nx)
+    # Generate 3D filter bank: (azimuth_bins, sediment_bins, spreading_rate_bins)
+    # We store convolved results: (azimuth_bins, sediment_bins, spreading_rate_bins, ny, nx)
     convolved_results = []
 
     for az in azimuth_angles:
         convolved_results_for_azimuth = []
         for sed in sediment_levels:
-            # Modify parameters based on sediment thickness
-            H_mod, lambda_n_mod, lambda_s_mod = modify_by_sediment(H_base, lambda_n_base, lambda_s_base, sed)
+            convolved_results_for_sediment = []
+            for sr in spreading_rate_levels:
+                # Get parameters for this spreading rate
+                params_sr = spreading_rate_to_params(sr, base_params=base_params)
 
-            # Generate filter at this (azimuth, sediment) combination
-            filt = generate_spatial_filter(H_mod, lambda_n_mod, lambda_s_mod, az, grid_spacing_km, filter_type=filter_type)
+                # Extract spreading-rate-scaled parameters
+                H_sr = params_sr['H']
+                lambda_n_sr = params_sr['lambda_n']
+                lambda_s_sr = params_sr['lambda_s']
 
-            # Convolve with random field (this is the expensive operation)
-            convolved = oaconvolve(random_field, filt, mode='same')
-            convolved_results_for_azimuth.append(convolved)
+                # Further modify parameters based on sediment thickness
+                H_mod, lambda_n_mod, lambda_s_mod = modify_by_sediment(H_sr, lambda_n_sr, lambda_s_sr, sed)
 
+                # Generate filter at this (azimuth, sediment, spreading_rate) combination
+                filt = generate_spatial_filter(H_mod, lambda_n_mod, lambda_s_mod, az, grid_spacing_km, filter_type=filter_type)
+
+                # Convolve with random field (this is the expensive operation)
+                convolved = oaconvolve(random_field, filt, mode='same')
+                convolved_results_for_sediment.append(convolved)
+
+            convolved_results_for_azimuth.append(convolved_results_for_sediment)
         convolved_results.append(convolved_results_for_azimuth)
 
     # Stack convolved results for efficient indexing
-    convolved_stack = np.array(convolved_results)  # Shape: (azimuth_bins, sediment_bins, ny, nx)
+    convolved_stack = np.array(convolved_results)  # Shape: (azimuth_bins, sediment_bins, spreading_rate_bins, ny, nx)
 
-    # For each pixel, find nearest (azimuth, sediment) bin
+    # For each pixel, find nearest (azimuth, sediment, spreading_rate) bin
     # Normalize azimuth to [0, 2π) for easier binning
     azimuth_normalized = np.mod(azimuth + np.pi, 2*np.pi)  # [0, 2π)
 
@@ -647,9 +730,17 @@ def generate_bathymetry_spatial_filter(seafloor_age, sediment_thickness, params,
         sediment_bin_idx = ((sediment_thickness - sediment_min) / sediment_bin_width).astype(int)
         sediment_bin_idx = np.clip(sediment_bin_idx, 0, sediment_bins - 1)
 
+    # Find nearest spreading rate bin for each pixel
+    if spreading_rate_bins == 1:
+        spreading_rate_bin_idx = np.zeros_like(spreading_rate, dtype=int)
+    else:
+        sr_bin_width = sr_range / (spreading_rate_bins - 1)
+        spreading_rate_bin_idx = ((spreading_rate - sr_min) / sr_bin_width).astype(int)
+        spreading_rate_bin_idx = np.clip(spreading_rate_bin_idx, 0, spreading_rate_bins - 1)
+
     # Extract values using nearest-neighbor lookup (vectorized - no loops!)
     i_indices, j_indices = np.meshgrid(np.arange(ny), np.arange(nx), indexing='ij')
-    bathymetry = convolved_stack[azimuth_bin_idx, sediment_bin_idx, i_indices, j_indices]
+    bathymetry = convolved_stack[azimuth_bin_idx, sediment_bin_idx, spreading_rate_bin_idx, i_indices, j_indices]
 
     return bathymetry
 
