@@ -85,48 +85,56 @@ def generate_random_phase(nx, ny):
     return np.exp(2j * np.pi * np.random.rand(nx, ny))
 
 # Sediment modification for abyssal hill parameters
-def modify_by_sediment(H, kn, ks, sediment_thickness, D=None):
+def modify_by_sediment(H, lambda_n, lambda_s, sediment_thickness, D=None):
     """
     Modify abyssal hill parameters based on sediment thickness.
-    Sediment drape reduces the rms height (H) and increases the width (kn, ks).
+    Sediment drape reduces the RMS height (H) and increases wavelength (spatial smoothing).
 
-    Implements Goff & Arbic (2010) Equations 5-7:
-    - Equation 5: H(S) = H₀ - S/2
-    - Equations 6-7: k(S/H₀) = k₀(1 + 1.3·S/H₀)
+    Based on physical expectation:
+    - Equation 5 (from Goff & Arbic 2010): H(S) = H₀ - S/2 (reduces amplitude)
+    - Wavelength modification (INVERTED from spectral form): λ(S) = λ₀ × (1 + 1.3·S/H₀)
+      → More sediment → larger wavelengths → smoother appearance in map view
 
     Optionally implements Equation 8 for fractal dimension if D is provided:
     - Equation 8: D(S/H₀) = 2.2 - 1.5·(S/H₀) for S/H₀ ≤ 0.1, else 2.05
 
     Parameters:
     -----------
-    H, kn, ks : float
-        Original parameters
+    H : float
+        Original RMS height (m)
+    lambda_n, lambda_s : float
+        Original characteristic wavelengths (km)
     sediment_thickness : float
         Sediment thickness (m)
     D : float, optional
-        Fractal dimension. If provided, also returns modified D. If None, only returns (H, kn, ks)
+        Fractal dimension. If provided, also returns modified D. If None, only returns (H, lambda_n, lambda_s)
 
     Returns:
     --------
-    (H_sed, kn_sed, ks_sed) if D is None
-    (H_sed, kn_sed, ks_sed, D_sed) if D is provided
+    (H_sed, lambda_n_sed, lambda_s_sed) if D is None
+    (H_sed, lambda_n_sed, lambda_s_sed, D_sed) if D is provided
     """
     H0 = max(H, 0.01)  # Avoid division by zero
     H_sed = np.maximum(H0 - sediment_thickness / 2, 0.01)  # Equation 5
-    kn_sed = kn + 1.3 * kn * (sediment_thickness / H0)  # Equation 6 (fixed: use H0 not H_sed)
-    ks_sed = ks + 1.3 * ks * (sediment_thickness / H0)  # Equation 7 (fixed: use H0 not H_sed)
+
+    # Sediment smooths seafloor → INCREASES wavelength (buries small features)
+    # For spatial smoothness: more sediment → larger wavelengths → smoother appearance
+    # Use reference H=200m to avoid spreading rate dependence in sediment effect
+    H_ref = 200.0  # Reference RMS height for sediment normalization
+    sediment_ratio = sediment_thickness / H_ref
+    lambda_n_sed = lambda_n * (1.0 + 1.3 * sediment_ratio)  # INVERTED: sediment increases wavelength
+    lambda_s_sed = lambda_s * (1.0 + 1.3 * sediment_ratio)  # INVERTED: sediment increases wavelength
 
     # Equation 8: Fractal dimension modification (optional)
     if D is not None:
-        ratio = sediment_thickness / H0
-        if ratio <= 0.1:
-            D_sed = 2.2 - 1.5 * ratio
+        if sediment_ratio <= 0.1:
+            D_sed = 2.2 - 1.5 * sediment_ratio
         else:
             D_sed = 2.05
         D_sed = np.clip(D_sed, 2.0, 2.3)
-        return H_sed, kn_sed, ks_sed, D_sed
+        return H_sed, lambda_n_sed, lambda_s_sed, D_sed
 
-    return H_sed, kn_sed, ks_sed
+    return H_sed, lambda_n_sed, lambda_s_sed
 
 # Azimuth calculation from seafloor age gradient
 def calculate_azimuth_from_age(seafloor_age):
@@ -204,7 +212,7 @@ def calculate_spreading_rate_from_age(seafloor_age, grid_spacing_km=1.0):
     return spreading_rate
 
 
-def spreading_rate_to_params(spreading_rate, output_units='deg'):
+def spreading_rate_to_params(spreading_rate):
     """
     Convert spreading rate to abyssal hill parameters using empirical relationships.
 
@@ -215,74 +223,70 @@ def spreading_rate_to_params(spreading_rate, output_units='deg'):
     -----------
     spreading_rate : float or array
         Half-spreading rate in mm/yr
-    output_units : str, optional
-        Units for wavenumbers: 'km' for km⁻¹, 'deg' for degrees⁻¹ (default: 'deg')
-        Use 'deg' when working with lat/lon grids, 'km' for projected grids
 
     Returns:
     --------
     params : dict
         Dictionary containing:
         - 'H': RMS height in meters
-        - 'kn': characteristic wavenumber perpendicular to ridge (km⁻¹ or deg⁻¹)
-        - 'ks': characteristic wavenumber parallel to ridge (km⁻¹ or deg⁻¹)
+        - 'lambda_n': characteristic wavelength perpendicular to ridge (km)
+        - 'lambda_s': characteristic wavelength parallel to ridge (km)
         - 'D': fractal dimension
 
     Notes:
     ------
-    Empirical relationships from Goff & Arbic (2010) Figure 1:
-    - H increases with spreading rate: ~100m at 10 mm/yr to ~300m at 80 mm/yr
-    - λn (perpendicular wavelength) increases with spreading rate
-    - λs (parallel wavelength) relatively constant
+    **Physical Units Design:**
+    lambda_n and lambda_s are now in PHYSICAL units (kilometers), representing
+    the actual characteristic wavelengths of abyssal hills. This makes them:
+    - Directly comparable to observations in Goff & Arbic (2010)
+    - Independent of grid resolution
+    - Physically meaningful and interpretable
+
+    **Empirical relationships** from Goff & Arbic (2010) Figure 1:
+    - H DECREASES with spreading rate: ~300m at 10 mm/yr to ~100m at 100 mm/yr
+      (faster spreading → lower amplitude due to hotter, weaker lithosphere)
+    - Abyssal hill wavelength INCREASES with spreading rate
+      (faster spreading → smoother, wider features due to more frequent resurfacing)
+    - Wavelengths in both directions increase with spreading rate
     - D relatively constant around 2.2
 
-    These are approximate fits to the observed data.
+    **Interpretation:**
+    - lambda_n (smaller ~2-12 km): characteristic WIDTH (normal to ridge)
+    - lambda_s (larger ~5-30 km): characteristic LENGTH (parallel to ridge)
+    - Since lambda_s > lambda_n, ridges are elongated parallel to ridge axis
 
-    When output_units='deg', wavenumbers are converted assuming 1 degree ≈ 111 km.
-    This is appropriate for lat/lon grids where coordinates are in degrees.
-
-    **WARNING - NEEDS CALIBRATION**:
-    The current empirical formulas produce kn/ks values that are ~1000× too large
-    for typical usage with lat/lon grids. The spatial filter uses kn/ks as dimensionless
-    scaling factors on normalized coordinates [-1,1], NOT as physical wavenumbers.
-
-    This function needs calibration to match your specific filter implementation.
-    For now, it's recommended to use fixed parameters that have been empirically
-    validated for your application (e.g., kn=0.05, ks=0.2 for degree-based grids).
-
-    TODO: Calibrate empirical relationships to produce appropriate scaling factors.
+    **Typical values (enhanced variation for visibility):**
+    - Slow spreading (10 mm/yr): H ≈ 325m, lambda_n ≈ 2 km, lambda_s ≈ 5 km
+    - Medium spreading (40 mm/yr): H ≈ 250m, lambda_n ≈ 5.4 km, lambda_s ≈ 13 km
+    - Fast spreading (100 mm/yr): H ≈ 100m, lambda_n ≈ 12 km, lambda_s ≈ 30 km
     """
     # Convert spreading rate to array for vectorized operations
     u = np.atleast_1d(spreading_rate)
 
     # Empirical relationships (approximate fits to Figure 1 data)
-    # RMS height H (meters): increases roughly linearly with spreading rate
-    # At u=10 mm/yr: H~100m, at u=80 mm/yr: H~300m
-    H = 50.0 + 3.5 * u  # H in meters
-    H = np.clip(H, 50, 350)  # Reasonable bounds
+    # RMS height H (meters): DECREASES with spreading rate
+    # Faster spreading → smoother seafloor with lower amplitude
+    # At u=10 mm/yr: H~300m, at u=100 mm/yr: H~100m
+    H = 350.0 - 2.5 * u  # H in meters
+    H = np.clip(H, 50, 400)  # Reasonable bounds
 
-    # Characteristic wavelength perpendicular to ridge λn (km)
-    # Increases with spreading rate: ~10 km at slow spreading, ~30 km at fast
-    lambda_n = 8.0 + 0.3 * u  # λn in km
-    lambda_n = np.clip(lambda_n, 8, 35)
+    # Characteristic wavelengths in PHYSICAL units (kilometers)
+    # Based on Goff & Arbic (2010) observations
+    # NOTE: "n" = normal (width), "s" = strike (length) in their terminology
 
-    # Characteristic wavelength parallel to ridge λs (km)
-    # Relatively constant around 5-8 km
-    lambda_s = 5.0 + 0.05 * u  # λs in km
-    lambda_s = np.clip(lambda_s, 4, 10)
+    # lambda_n: characteristic WIDTH (km) - SMALLER value
+    # Wavelength in direction normal to ridge (across the hills)
+    # INCREASES with spreading rate (faster spreading → smoother, wider features)
+    # Slow (10 mm/yr): ~2 km, Fast (100 mm/yr): ~12 km (6× variation)
+    lambda_n = 1.0 + 0.11 * u  # km
+    lambda_n = np.clip(lambda_n, 1, 13)
 
-    # Convert wavelengths to wavenumbers: k = 2π/λ
-    kn = 2.0 * np.pi / lambda_n  # km⁻¹
-    ks = 2.0 * np.pi / lambda_s  # km⁻¹
-
-    # Convert to degrees if requested
-    if output_units == 'deg':
-        # 1 degree ≈ 111 km at equator (this is approximate)
-        # λ (deg) = λ (km) / (111 km/deg)
-        # k (deg⁻¹) = k (km⁻¹) × (111 km/deg)
-        km_per_degree = 111.0
-        kn = kn * km_per_degree
-        ks = ks * km_per_degree
+    # lambda_s: characteristic LENGTH (km) - LARGER value
+    # Wavelength in direction parallel to ridge (along the hills)
+    # Also increases with spreading rate
+    # Slow (10 mm/yr): ~5 km, Fast (100 mm/yr): ~30 km (6× variation)
+    lambda_s = 2.0 + 0.28 * u  # km
+    lambda_s = np.clip(lambda_s, 2, 32)
 
     # Fractal dimension D: relatively constant around 2.2
     # Slightly lower at faster spreading rates
@@ -293,15 +297,15 @@ def spreading_rate_to_params(spreading_rate, output_units='deg'):
     if np.isscalar(spreading_rate):
         return {
             'H': float(H),
-            'kn': float(kn),
-            'ks': float(ks),
+            'lambda_n': float(lambda_n),
+            'lambda_s': float(lambda_s),
             'D': float(D)
         }
     else:
         return {
             'H': H,
-            'kn': kn,
-            'ks': ks,
+            'lambda_n': lambda_n,
+            'lambda_s': lambda_s,
             'D': D
         }
 
@@ -357,18 +361,24 @@ def generate_random_field(grid_size):
     return np.random.randn(*grid_size)
 
 # Generate a spatial filter based on local parameters
-def generate_spatial_filter(H, kn, ks, azimuth, filter_size=25, filter_type='gaussian'):
+def generate_spatial_filter(H, lambda_n, lambda_s, azimuth, grid_spacing_km, filter_size=25, filter_type='gaussian'):
     """
-    Generate a spatial filter based on local parameters H, kn, ks, and azimuth.
+    Generate a spatial filter based on local parameters H, lambda_n, lambda_s, and azimuth.
 
     Parameters:
     -----------
     H : float
         RMS height (meters)
-    kn, ks : float
-        Characteristic wavenumbers (km⁻¹) in ridge-normal and ridge-parallel directions
+    lambda_n, lambda_s : float
+        Characteristic wavelengths (km):
+        - lambda_n: WIDTH (normal to ridge, SMALLER ~3-8 km)
+        - lambda_s: LENGTH (parallel to ridge, LARGER ~10-20 km)
+        These are PHYSICAL wavelengths representing the dominant scales of abyssal hills.
+        lambda_s > lambda_n creates elongated ridges parallel to paleo-ridge axis.
     azimuth : float
         Ridge orientation in radians
+    grid_spacing_km : float
+        Grid spacing in kilometers (e.g., 1.85 km for 1 arcmin at equator)
     filter_size : int, optional
         Size of the filter kernel (default: 25)
     filter_type : str, optional
@@ -383,14 +393,35 @@ def generate_spatial_filter(H, kn, ks, azimuth, filter_size=25, filter_type='gau
 
     Notes:
     ------
+    The lambda_n/lambda_s parameters are now in PHYSICAL units (km), making them:
+    - Directly interpretable in terms of real-world abyssal hill characteristics
+    - Independent of grid resolution (same physical wavelength works at any resolution)
+    - Comparable to observations in the literature
+
+    The wavelengths are converted to wavenumbers in pixel⁻¹ units using the grid spacing:
+        kn = grid_spacing_km / lambda_n
+        ks = grid_spacing_km / lambda_s
+
     The Gaussian filter is simpler and faster but the von Kármán filter is theoretically
     correct for fractal terrain following the von Kármán autocorrelation function.
     In practice, both produce similar results.
     """
+    # Convert physical wavelengths (km) to pixels
+    # These are the characteristic length scales for the filter
+    lambda_n_pixels = lambda_n / grid_spacing_km  # pixels
+    lambda_s_pixels = lambda_s / grid_spacing_km  # pixels
+
     # Create a 2D grid for the filter
     # Use consistent domain for both filter types
+    # The filter coordinates span filter_size pixels but are normalized to [-1, 1]
+    # So we need to scale wavelengths: 1 unit in filter coords = filter_size/2 pixels
     x = np.linspace(-1, 1, filter_size)
     y = np.linspace(-1, 1, filter_size)
+
+    # Scale wavelengths to filter coordinate system
+    # lambda in pixels → lambda in filter coords = lambda / (filter_size/2)
+    lambda_n_scaled = lambda_n_pixels / (filter_size / 2.0)
+    lambda_s_scaled = lambda_s_pixels / (filter_size / 2.0)
 
     xx, yy = np.meshgrid(x, y)
 
@@ -407,10 +438,12 @@ def generate_spatial_filter(H, kn, ks, azimuth, filter_size=25, filter_type='gau
         # Use typical ν = 0.8 for abyssal hills (corresponds to D = 2.2)
         nu = 0.8
 
-        # Calculate ANISOTROPIC distance - same scaling as Gaussian
-        # Divide by kn (small) → narrow in x_rot direction (perpendicular to ridge)
-        # Divide by ks (large) → wide in y_rot direction (parallel to ridge)
-        r_aniso = np.sqrt((x_rot / kn)**2 + (y_rot / ks)**2)
+        # Calculate ANISOTROPIC distance using scaled wavelengths
+        # lambda_n is WIDTH (small) → narrow in that direction
+        # lambda_s is LENGTH (large) → wide in that direction
+        # y_rot aligns with ridge-parallel (elongation) → use lambda_s_scaled
+        # x_rot aligns with ridge-perpendicular (width) → use lambda_n_scaled
+        r_aniso = np.sqrt((x_rot / lambda_n_scaled)**2 + (y_rot / lambda_s_scaled)**2)
 
         # Avoid r=0 singularity
         r_aniso = np.where(r_aniso < 1e-10, 1e-10, r_aniso)
@@ -432,8 +465,11 @@ def generate_spatial_filter(H, kn, ks, azimuth, filter_size=25, filter_type='gau
             spatial_filter = np.zeros_like(spatial_filter)
 
     else:  # filter_type == 'gaussian' (default)
-        # Apply anisotropic Gaussian scaling based on kn and ks
-        filter_exp = -(x_rot**2 / (2 * kn**2) + y_rot**2 / (2 * ks**2))
+        # Apply anisotropic Gaussian scaling using scaled wavelengths
+        # Larger wavelength → wider filter → smoother texture (INTUITIVE!)
+        # y_rot → ridge-parallel (elongation) → use lambda_s_scaled (large)
+        # x_rot → ridge-perpendicular (width) → use lambda_n_scaled (small)
+        filter_exp = -((x_rot / lambda_n_scaled)**2 + (y_rot / lambda_s_scaled)**2) / 2
 
         # Generate a Gaussian filter and scale it by the RMS height (H)
         spatial_filter = H * np.exp(filter_exp)
@@ -450,7 +486,7 @@ def generate_spatial_filter(H, kn, ks, azimuth, filter_size=25, filter_type='gau
     return spatial_filter
 
 # Generate synthetic bathymetry using a spatial filter (ORIGINAL - SLOW)
-def generate_bathymetry_spatial_filter_original(seafloor_age, sediment_thickness, params, random_field=None, filter_type='gaussian'):
+def generate_bathymetry_spatial_filter_original(seafloor_age, sediment_thickness, params, grid_spacing_km, random_field=None, filter_type='gaussian'):
     """
     Original pixel-by-pixel implementation (SLOW but simple).
 
@@ -470,15 +506,15 @@ def generate_bathymetry_spatial_filter_original(seafloor_age, sediment_thickness
         for j in range(nx):
             # Extract local parameters
             H_local = params['H']
-            kn_local = params['kn']
-            ks_local = params['ks']
+            lambda_n_local = params['lambda_n']
+            lambda_s_local = params['lambda_s']
             azimuth_local = azimuth[i, j]
 
             # Modify the parameters based on sediment thickness
-            H_local, kn_local, ks_local = modify_by_sediment(H_local, kn_local, ks_local, sediment_thickness[i, j])
+            H_local, lambda_n_local, lambda_s_local = modify_by_sediment(H_local, lambda_n_local, lambda_s_local, sediment_thickness[i, j])
 
             # Generate the local filter
-            spatial_filter = generate_spatial_filter(H_local, kn_local, ks_local, azimuth_local, filter_type=filter_type)
+            spatial_filter = generate_spatial_filter(H_local, lambda_n_local, lambda_s_local, azimuth_local, grid_spacing_km, filter_type=filter_type)
 
             # Apply the filter to the random noise field at location (i, j)
             filtered_value = oaconvolve(random_field, spatial_filter, mode='same')[i, j]
@@ -490,7 +526,7 @@ def generate_bathymetry_spatial_filter_original(seafloor_age, sediment_thickness
 
 
 # Generate synthetic bathymetry using a spatial filter (OPTIMIZED)
-def generate_bathymetry_spatial_filter(seafloor_age, sediment_thickness, params, random_field=None,
+def generate_bathymetry_spatial_filter(seafloor_age, sediment_thickness, params, grid_spacing_km, random_field=None,
                                        filter_type='gaussian', azimuth_bins=36, sediment_bins=5, optimize=True):
     """
     Generate synthetic bathymetry using a spatially varying filter based on von Kármán model.
@@ -506,7 +542,10 @@ def generate_bathymetry_spatial_filter(seafloor_age, sediment_thickness, params,
         Sediment thicknesses in meters
     params : dict
         Dictionary containing base abyssal hill parameters
-        e.g., {'H': H, 'kn': kn, 'ks': ks, 'D': D}
+        e.g., {'H': H, 'lambda_n': lambda_n, 'lambda_s': lambda_s, 'D': D}
+        where H is in meters and lambda_n, lambda_s are in km
+    grid_spacing_km : float
+        Grid spacing in kilometers (e.g., 1.85 km for 1 arcmin at equator)
     random_field : 2D array, optional
         Pre-generated random field (if None, must be provided externally)
     filter_type : str, optional
@@ -542,7 +581,7 @@ def generate_bathymetry_spatial_filter(seafloor_age, sediment_thickness, params,
     if not optimize:
         # Fall back to original slow implementation
         return generate_bathymetry_spatial_filter_original(
-            seafloor_age, sediment_thickness, params, random_field, filter_type
+            seafloor_age, sediment_thickness, params, grid_spacing_km, random_field, filter_type
         )
 
     ny, nx = seafloor_age.shape
@@ -566,8 +605,8 @@ def generate_bathymetry_spatial_filter(seafloor_age, sediment_thickness, params,
     azimuth_angles = np.linspace(-np.pi, np.pi, azimuth_bins, endpoint=False)
 
     H_base = params['H']
-    kn_base = params['kn']
-    ks_base = params['ks']
+    lambda_n_base = params['lambda_n']
+    lambda_s_base = params['lambda_s']
 
     # Generate filter bank: shape will be (azimuth_bins, sediment_bins, filter_size, filter_size)
     # But we only store convolved results: (azimuth_bins, sediment_bins, ny, nx)
@@ -577,10 +616,10 @@ def generate_bathymetry_spatial_filter(seafloor_age, sediment_thickness, params,
         convolved_results_for_azimuth = []
         for sed in sediment_levels:
             # Modify parameters based on sediment thickness
-            H_mod, kn_mod, ks_mod = modify_by_sediment(H_base, kn_base, ks_base, sed)
+            H_mod, lambda_n_mod, lambda_s_mod = modify_by_sediment(H_base, lambda_n_base, lambda_s_base, sed)
 
             # Generate filter at this (azimuth, sediment) combination
-            filt = generate_spatial_filter(H_mod, kn_mod, ks_mod, az, filter_type=filter_type)
+            filt = generate_spatial_filter(H_mod, lambda_n_mod, lambda_s_mod, az, grid_spacing_km, filter_type=filter_type)
 
             # Convolve with random field (this is the expensive operation)
             convolved = oaconvolve(random_field, filt, mode='same')
