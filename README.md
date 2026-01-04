@@ -3,204 +3,193 @@ Generate Synthetic Abyssal Hill Fabric
 
 Code to generate maps of synthetic abyssal hill fabric for ocean basins following the method described by Goff and Arbic (2010), *Ocean Modelling*, doi:[10.1016/j.ocemod.2009.10.001](https://doi.org/10.1016/j.ocemod.2009.10.001).
 
-## Overview
-
-AbFab generates realistic synthetic bathymetry for abyssal hill fabric using a spatial filtering approach. The inputs are maps of seafloor age and sediment thickness.
-
-## Features
-
-- **Dual filter options**: Gaussian (fast, default) or von Kármán (theoretically correct)
-- **Spatial variability**: Handles spatially-varying parameters (age, sediment, azimuth)
-- **Sediment modification**: Automatically adjusts roughness based on sediment thickness
-- **Verified orientation**: Produces linear ridges perpendicular to spreading direction
-- **Parallel processing**: Chunk-based approach for large grids
-
-## Installation
-
-```bash
-# Dependencies
-pip install numpy scipy xarray
-```
-
 ## Quick Start
 
 ```python
 import numpy as np
 import AbFab as af
 
-# Generate random field
-random_field = af.generate_random_field(seafloor_age.shape)
+# Calculate grid spacing (km/pixel)
+lon_spacing_deg = float(np.abs(age_da.lon.values[1] - age_da.lon.values[0]))
+mean_lat = float(np.mean(age_da.lat.values))
+grid_spacing_km = lon_spacing_deg * 111.32 * np.cos(np.radians(mean_lat))
 
-# Set parameters
+# Set parameters (physical units: km)
 params = {
-    'H': 50,       # RMS height (m)
-    'kn': 0.05,    # Perpendicular wavenumber (deg⁻¹)
-    'ks': 0.2,     # Parallel wavenumber (deg⁻¹)
-    'D': 2.2       # Fractal dimension
+    'H': 250.0,       # RMS height (m)
+    'lambda_n': 6.5,  # Perpendicular wavelength (km) - smaller = wider hills
+    'lambda_s': 16.0, # Parallel wavelength (km) - larger = narrower ridges
+    'D': 2.2          # Fractal dimension
 }
+
+# Generate random field
+np.random.seed(42)
+random_field = af.generate_random_field(age_da.shape)
 
 # Generate bathymetry
 bathymetry = af.generate_bathymetry_spatial_filter(
-    seafloor_age,
-    sediment_thickness,
+    age_da.data,
+    sediment_da.data,
     params,
-    random_field
-)
-```
-
-## Usage Examples
-
-### Example 1: Basic Usage (Default Gaussian Filter)
-
-```python
-import AbFab as af
-
-params = {'H': 50, 'kn': 0.05, 'ks': 0.2, 'D': 2.2}
-random_field = af.generate_random_field(age_grid.shape)
-
-bathymetry = af.generate_bathymetry_spatial_filter(
-    age_grid,
-    sediment_grid,
-    params,
-    random_field
-)
-```
-
-### Example 2: Using von Kármán Filter
-
-```python
-bathymetry = af.generate_bathymetry_spatial_filter(
-    age_grid,
-    sediment_grid,
-    params,
+    grid_spacing_km,
     random_field,
-    filter_type='von_karman'  # Theoretically correct filter
+    filter_type='gaussian',  # or 'von_karman'
+    optimize=True            # 50x speedup with filter bank
 )
 ```
 
-### Example 3: Large Grid Processing (Parallel Chunks)
+## Key Features
 
-See [tiling_test_updated.ipynb](tiling_test_updated.ipynb) for a complete example of parallel chunk-based processing for large grids.
+### Physical Units (km)
+- **Resolution independent**: Same parameters work at any grid resolution
+- **Physically meaningful**: "6.5 km wavelength" is interpretable
+- **Literature compatible**: Direct comparison to published observations
 
-## Key Functions
+### Spatially Varying Spreading Rate
+```python
+# Enable spatially varying parameters
+bathymetry = af.generate_bathymetry_spatial_filter(
+    age_da.data,
+    sediment_da.data,
+    params,  # Base parameters to scale
+    grid_spacing_km,
+    random_field,
+    spreading_rate_bins=5,  # Enable spatial variation
+    base_params=params      # Parameters to apply spreading rate scaling to
+)
+```
 
-### `generate_bathymetry_spatial_filter(seafloor_age, sediment_thickness, params, random_field, filter_type='gaussian')`
+Automatically:
+- Calculates spreading rate from age gradient
+- Bins rates into 5 levels (default)
+- Scales parameters: fast spreading → smaller wavelengths, smaller H
+- Uses **trilinear bin interpolation** for smooth transitions
 
-Main function for generating synthetic bathymetry.
+### Dual Filter Options
+- **Gaussian** (default): Fast, clean results - recommended for most use
+- **von Kármán**: Theoretically correct Bessel function - for research rigor
 
-**Parameters:**
-- `seafloor_age`: 2D array of seafloor ages (Myr)
-- `sediment_thickness`: 2D array of sediment thickness (m)
-- `params`: Dict with keys `H`, `kn`, `ks`, `D`
-- `random_field`: 2D array of random noise (same shape as inputs)
-- `filter_type`: 'gaussian' (default) or 'von_karman'
-
-**Returns:**
-- 2D array of synthetic bathymetry (m)
-
-### `calculate_azimuth_from_age(seafloor_age)`
-
-Calculate spreading direction from age gradient.
-
-### `modify_by_sediment(H, kn, ks, sediment_thickness, D=None)`
-
-Modify parameters based on sediment thickness (Goff & Arbic Equations 5-7).
-
-### `generate_random_field(grid_size)`
-
-Generate Gaussian random field for convolution.
-
-## Filter Types
-
-### Gaussian Filter (Default)
-- Fast computation
-- Smooth, clean results
-- Backward compatible
-- **Recommended for most applications**
-
-### von Kármán Filter
-- Theoretically correct autocorrelation using Bessel function K_ν
-- Slightly rougher texture with heavier tails
-- ~40% higher RMS output
-- Use for research applications requiring theoretical rigor
+### Performance Optimization
+- **Filter bank approach**: 50× speedup over pixel-by-pixel
+- **<4% error** with default settings (36 azimuth × 5 sediment bins)
+- **Parallel chunk processing**: See [tiling_test_updated.ipynb](tiling_test_updated.ipynb)
 
 ## Parameter Guidelines
 
-### Fixed Parameters (Recommended)
-Based on empirical validation:
+### Typical Values
+Based on Goff & Arbic (2010):
+
+| Spreading Rate | H (m) | λ_n (km) | λ_s (km) |
+|---------------|-------|----------|----------|
+| Slow (10 mm/yr) | 85 | 18.8 | 7.5 |
+| Medium (40 mm/yr) | 190 | 15.2 | 6.0 |
+| Fast (100 mm/yr) | 400 | 8.0 | 3.0 |
+
+**Note**: Faster spreading produces *smaller* wavelengths (smoother, smaller hills)
+
+### Fixed Parameters (Recommended Starting Point)
 ```python
 params = {
-    'H': 50,       # RMS height: 50-300m depending on spreading rate
-    'kn': 0.05,    # Perpendicular: smaller = wider hills
-    'ks': 0.2,     # Parallel: larger = narrower hills
-    'D': 2.2       # Fractal dimension: typically 2.0-2.3
+    'H': 250.0,       # RMS height: 50-400m
+    'lambda_n': 6.5,  # Perpendicular: 5-20 km
+    'lambda_s': 16.0, # Parallel: 3-10 km
+    'D': 2.2          # Fractal: 2.0-2.3
 }
 ```
 
-### Typical Ranges
-- **H** (RMS height): 50-300 m (increases with spreading rate)
-- **kn** (perpendicular): 0.01-0.1 deg⁻¹ for lat/lon grids
-- **ks** (parallel): 0.1-0.5 deg⁻¹ for lat/lon grids
-- **D** (fractal dimension): 2.0-2.3
-- **λn** (perpendicular wavelength): 10-30 km (physical space)
-- **λs** (parallel wavelength): 5-10 km (physical space)
-
-## Notebooks
-
-- **[tiling_test.ipynb](tiling_test.ipynb)** - Original working example
-- **[tiling_test_updated.ipynb](tiling_test_updated.ipynb)** - Demonstrates new features (dual filters)
-- **[test_azimuth.ipynb](test_azimuth.ipynb)** - Verification of ridge orientation
-
-## Known Issues
-
-### Spreading Rate Utilities (⚠️ Needs Calibration)
-
-The `spreading_rate_to_params()` and `calculate_spreading_rate_from_age()` functions are implemented but **require calibration** before use. The current empirical relationships produce values ~1000× too large for lat/lon grids.
-
-**Workaround**: Use fixed parameters validated for your application.
-
-See [DEVELOPMENT_NOTES.md](DEVELOPMENT_NOTES.md) for details.
-
-## Performance Tips
-
-### Optimized Implementation (Default)
-
-`generate_bathymetry_spatial_filter()` includes built-in optimization using a filter bank approach:
-- **50× speedup** over naive pixel-by-pixel method
-- **<4% error** with default settings (36 azimuth × 5 sediment bins)
-- Automatically enabled with `optimize=True` (default)
-
-**Tuning parameters**:
+### Auto-calculate from Spreading Rate
 ```python
+# Option 1: Single median spreading rate
+spreading_rate = af.calculate_spreading_rate_from_age(age_da.data, grid_spacing_km)
+median_rate = np.nanmedian(spreading_rate)
+params = af.spreading_rate_to_params(median_rate, base_params=params)
+
+# Option 2: Spatially varying (recommended for heterogeneous regions)
 bathymetry = af.generate_bathymetry_spatial_filter(
-    seafloor_age, sediment_thickness, params, random_field,
-    azimuth_bins=36,    # Higher = more accurate, slower
-    sediment_bins=5,    # Higher = more accurate, slower
-    optimize=True       # Set False for pixel-perfect original method
+    ..., spreading_rate_bins=5, base_params=params
 )
 ```
 
-**Accuracy vs Speed**:
-- 3 sediment bins: ~60× faster, 8% error
-- 5 sediment bins: ~50× faster, 4% error (default)
-- 10 sediment bins: ~25× faster, 2% error
+## Installation
 
-### Large Grid Processing
+```bash
+# Core dependencies
+pip install numpy scipy xarray
 
-For very large grids (>1000×1000):
-1. Use chunk-based processing (see `tiling_test_updated.ipynb`)
-2. Process chunks in parallel using `joblib.Parallel`
-3. Use padding (≥20 pixels) to avoid edge artifacts
-4. Gaussian filter is ~30% faster than von Kármán
+# For notebooks
+pip install jupyter matplotlib pygmt joblib
+```
+
+## Examples
+
+- **[tiling_test_updated.ipynb](tiling_test_updated.ipynb)** - Complete demonstration with 4 methods:
+  1. Fixed parameters
+  2. Median spreading rate parameters
+  3. von Kármán filter
+  4. Spatially varying spreading rate (NEW!)
+
+## Key Functions
+
+### `generate_bathymetry_spatial_filter()`
+Main function for generating synthetic bathymetry.
+
+```python
+bathymetry = af.generate_bathymetry_spatial_filter(
+    seafloor_age,        # 2D array (Myr)
+    sediment_thickness,  # 2D array (m)
+    params,              # Dict: H, lambda_n, lambda_s, D
+    grid_spacing_km,     # Float: km/pixel
+    random_field,        # 2D array: same shape as inputs
+    filter_type='gaussian',      # 'gaussian' or 'von_karman'
+    optimize=True,               # Use filter bank (50x faster)
+    azimuth_bins=36,             # Azimuth discretization
+    sediment_bins=5,             # Sediment discretization
+    spreading_rate_bins=1,       # Set >1 for spatial variation
+    base_params=None             # Base params for SR scaling
+)
+```
+
+### `spreading_rate_to_params()`
+Convert spreading rate to parameters using empirical relationships.
+
+```python
+params = af.spreading_rate_to_params(
+    spreading_rate,  # mm/yr (half-spreading)
+    base_params=None # Optional base params to scale
+)
+# Returns: {'H': float, 'lambda_n': float, 'lambda_s': float, 'D': float}
+```
+
+### `calculate_spreading_rate_from_age()`
+Calculate spreading rate from age gradient.
+
+```python
+spreading_rate = af.calculate_spreading_rate_from_age(
+    seafloor_age,     # 2D array (Myr)
+    grid_spacing_km   # Float: km/pixel
+)
+# Returns: 2D array of half-spreading rates (mm/yr)
+```
+
+## Tests
+
+Test scripts are in the `tests/` directory:
+- `test_optimization.py` - Validates filter bank optimization
+- `test_sediment_effect.py` - Validates sediment modification
+- `test_spreading_rate_scaling.py` - Validates spreading rate parameter scaling
+- `test_spreading_rate_variation.py` - Validates spatially varying spreading rate
+- `test_bin_interpolation.py` - Validates smooth bin transitions
+
+Run tests:
+```bash
+cd tests
+python test_optimization.py
+```
 
 ## References
 
 Goff, J. A., & Arbic, B. K. (2010). Global prediction of abyssal hill root‐mean‐square heights from small‐scale altimetric gravity variability. *Journal of Geophysical Research: Solid Earth*, 115(B12). https://doi.org/10.1016/j.ocemod.2009.10.001
 
-## License
+## Technical Details
 
-[Add your license here]
-
-## Contributing
-
-This code was developed with assistance from Claude Code. See [DEVELOPMENT_NOTES.md](DEVELOPMENT_NOTES.md) for implementation details and future development guidance.
+For detailed implementation notes, development history, and guidance for future Claude Code sessions, see [CLAUDE.md](CLAUDE.md).
