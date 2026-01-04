@@ -24,8 +24,8 @@ import AbFab as af
 # ============================================================================
 
 # Region selection (longitude, latitude bounds)
-XMIN, XMAX = 30, 100
-YMIN, YMAX = -50, 0
+XMIN, XMAX = -50, 150
+YMIN, YMAX = -70, 50
 
 # Grid parameters
 SPACING = '2m'  # Grid spacing (e.g., '2m' = 2 arcmin)
@@ -33,15 +33,15 @@ SPACING = '2m'  # Grid spacing (e.g., '2m' = 2 arcmin)
 # Fixed abyssal hill parameters (baseline)
 PARAMS_FIXED = {
     'H': 50.0,       # RMS height (m)
-    'lambda_n': 16,  # Perpendicular wavelength (km)
-    'lambda_s': 80, # Parallel wavelength (km)
+    'lambda_n': 12,  # Perpendicular wavelength (km)
+    'lambda_s': 50, # Parallel wavelength (km)
     'D': 2.2          # Fractal dimension
 }
 
 # Chunking parameters for parallel processing
 CHUNKSIZE = 100      # Chunk size in pixels
 CHUNKPAD = 20        # Padding to avoid edge effects
-NUM_CPUS = 4         # Number of parallel workers
+NUM_CPUS = 8         # Number of parallel workers
 
 # Optimization settings
 USE_OPTIMIZATION = True   # Use filter bank (50x speedup)
@@ -337,8 +337,9 @@ def main():
     print("Generating comparison figure...")
     print("="*70)
 
-    fig, axes = plt.subplots(4, 1, figsize=(30, 32))
+    fig, axes = plt.subplots(2, 2, figsize=(30, 30))
 
+    axes = axes.flatten()
     vmin, vmax = -1, 1
 
     # Method 1
