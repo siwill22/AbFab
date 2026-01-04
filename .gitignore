@@ -161,3 +161,4 @@ cython_debug/
 *.png
 test_optimization.py
 test_optimization_visual.ipynb
+.DS_Store
