@@ -713,37 +713,75 @@ def generate_bathymetry_spatial_filter(seafloor_age, sediment_thickness, params,
     # Stack convolved results for efficient indexing
     convolved_stack = np.array(convolved_results)  # Shape: (azimuth_bins, sediment_bins, spreading_rate_bins, ny, nx)
 
-    # For each pixel, find nearest (azimuth, sediment, spreading_rate) bin
+    # For each pixel, interpolate between bins (trilinear interpolation)
+    # This eliminates visible boundaries at bin transitions
+
     # Normalize azimuth to [0, 2π) for easier binning
     azimuth_normalized = np.mod(azimuth + np.pi, 2*np.pi)  # [0, 2π)
 
-    # Find nearest azimuth bin for each pixel
+    # Calculate continuous bin positions (not rounded)
     azimuth_bin_width = 2 * np.pi / azimuth_bins
-    azimuth_bin_idx = (azimuth_normalized / azimuth_bin_width).astype(int)
-    azimuth_bin_idx = np.clip(azimuth_bin_idx, 0, azimuth_bins - 1)
+    azimuth_bin_pos = azimuth_normalized / azimuth_bin_width
 
-    # Find nearest sediment bin for each pixel
     if sediment_bins == 1:
-        sediment_bin_idx = np.zeros_like(sediment_thickness, dtype=int)
+        sediment_bin_pos = np.zeros_like(sediment_thickness)
     else:
         sediment_bin_width = sediment_range / (sediment_bins - 1)
-        sediment_bin_idx = ((sediment_thickness - sediment_min) / sediment_bin_width).astype(int)
-        sediment_bin_idx = np.clip(sediment_bin_idx, 0, sediment_bins - 1)
+        sediment_bin_pos = (sediment_thickness - sediment_min) / sediment_bin_width
 
-    # Find nearest spreading rate bin for each pixel
     if spreading_rate_bins == 1:
-        spreading_rate_bin_idx = np.zeros_like(spreading_rate, dtype=int)
+        sr_bin_pos = np.zeros_like(spreading_rate)
     else:
         sr_bin_width = sr_range / (spreading_rate_bins - 1)
-        spreading_rate_bin_idx = ((spreading_rate - sr_min) / sr_bin_width).astype(int)
-        spreading_rate_bin_idx = np.clip(spreading_rate_bin_idx, 0, spreading_rate_bins - 1)
+        sr_bin_pos = (spreading_rate - sr_min) / sr_bin_width
 
-    # Extract values using nearest-neighbor lookup (vectorized - no loops!)
+    # Get integer bin indices and fractional parts for interpolation
+    az_idx0 = np.floor(azimuth_bin_pos).astype(int)
+    az_idx1 = az_idx0 + 1
+    az_frac = azimuth_bin_pos - az_idx0
+
+    # Handle azimuth wraparound (circular)
+    az_idx0 = np.clip(az_idx0, 0, azimuth_bins - 1)
+    az_idx1 = np.mod(az_idx1, azimuth_bins)
+
+    sed_idx0 = np.floor(sediment_bin_pos).astype(int)
+    sed_idx1 = np.minimum(sed_idx0 + 1, sediment_bins - 1)
+    sed_frac = sediment_bin_pos - sed_idx0
+    sed_idx0 = np.clip(sed_idx0, 0, sediment_bins - 1)
+
+    sr_idx0 = np.floor(sr_bin_pos).astype(int)
+    sr_idx1 = np.minimum(sr_idx0 + 1, spreading_rate_bins - 1)
+    sr_frac = sr_bin_pos - sr_idx0
+    sr_idx0 = np.clip(sr_idx0, 0, spreading_rate_bins - 1)
+
+    # Trilinear interpolation: interpolate across 8 corners of bin cube
+    # This is computationally efficient and eliminates bin discontinuities
     i_indices, j_indices = np.meshgrid(np.arange(ny), np.arange(nx), indexing='ij')
-    bathymetry = convolved_stack[azimuth_bin_idx, sediment_bin_idx, spreading_rate_bin_idx, i_indices, j_indices]
+
+    # Get values at 8 corners
+    c000 = convolved_stack[az_idx0, sed_idx0, sr_idx0, i_indices, j_indices]
+    c001 = convolved_stack[az_idx0, sed_idx0, sr_idx1, i_indices, j_indices]
+    c010 = convolved_stack[az_idx0, sed_idx1, sr_idx0, i_indices, j_indices]
+    c011 = convolved_stack[az_idx0, sed_idx1, sr_idx1, i_indices, j_indices]
+    c100 = convolved_stack[az_idx1, sed_idx0, sr_idx0, i_indices, j_indices]
+    c101 = convolved_stack[az_idx1, sed_idx0, sr_idx1, i_indices, j_indices]
+    c110 = convolved_stack[az_idx1, sed_idx1, sr_idx0, i_indices, j_indices]
+    c111 = convolved_stack[az_idx1, sed_idx1, sr_idx1, i_indices, j_indices]
+
+    # Interpolate along spreading rate (z) axis
+    c00 = c000 * (1 - sr_frac) + c001 * sr_frac
+    c01 = c010 * (1 - sr_frac) + c011 * sr_frac
+    c10 = c100 * (1 - sr_frac) + c101 * sr_frac
+    c11 = c110 * (1 - sr_frac) + c111 * sr_frac
+
+    # Interpolate along sediment (y) axis
+    c0 = c00 * (1 - sed_frac) + c01 * sed_frac
+    c1 = c10 * (1 - sed_frac) + c11 * sed_frac
+
+    # Interpolate along azimuth (x) axis
+    bathymetry = c0 * (1 - az_frac) + c1 * az_frac
 
     return bathymetry
-
 
 
 def generate_bathymetry_tiled(seafloor_age, sediment_thickness, params,
