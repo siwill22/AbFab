@@ -556,7 +556,8 @@ def generate_bathymetry_spatial_filter_original(seafloor_age, sediment_thickness
 # Generate synthetic bathymetry using a spatial filter (OPTIMIZED)
 def generate_bathymetry_spatial_filter(seafloor_age, sediment_thickness, params, grid_spacing_km, random_field=None,
                                        filter_type='gaussian', azimuth_bins=36, sediment_bins=5,
-                                       spreading_rate_bins=5, base_params=None, optimize=True):
+                                       spreading_rate_bins=5, base_params=None, optimize=True,
+                                       sediment_range=None, spreading_rate_range=None):
     """
     Generate synthetic bathymetry using a spatially varying filter based on von Kármán model.
 
@@ -601,6 +602,14 @@ def generate_bathymetry_spatial_filter(seafloor_age, sediment_thickness, params,
     optimize : bool, optional
         If True, use optimized filter bank approach (default)
         If False, use original pixel-by-pixel method (very slow!)
+    sediment_range : tuple, optional
+        Global (min, max) sediment range for consistent binning across chunks.
+        If None, uses local min/max from this chunk.
+        Format: (sediment_min, sediment_max)
+    spreading_rate_range : tuple, optional
+        Global (min, max) spreading rate range for consistent binning across chunks.
+        If None, uses local min/max from this chunk.
+        Format: (sr_min, sr_max)
 
     Returns:
     --------
@@ -654,9 +663,14 @@ def generate_bathymetry_spatial_filter(seafloor_age, sediment_thickness, params,
                                   spreading_rate)
 
     # Bin spreading rate
-    sr_min = np.min(spreading_rate)
-    sr_max = np.max(spreading_rate)
-    sr_range = sr_max - sr_min
+    # Use global range if provided (for consistent binning across chunks)
+    if spreading_rate_range is not None:
+        sr_min, sr_max = spreading_rate_range
+        sr_range = sr_max - sr_min
+    else:
+        sr_min = np.min(spreading_rate)
+        sr_max = np.max(spreading_rate)
+        sr_range = sr_max - sr_min
 
     if sr_range < 1e-6 or spreading_rate_bins == 1:
         # Uniform spreading rate or disabled - only need one bin
@@ -666,11 +680,16 @@ def generate_bathymetry_spatial_filter(seafloor_age, sediment_thickness, params,
         spreading_rate_levels = np.linspace(sr_min, sr_max, spreading_rate_bins)
 
     # Bin sediment thickness
-    sediment_min = np.min(sediment_thickness)
-    sediment_max = np.max(sediment_thickness)
-    sediment_range = sediment_max - sediment_min
+    # Use global range if provided (for consistent binning across chunks)
+    if sediment_range is not None:
+        sediment_min, sediment_max = sediment_range
+        sediment_range_val = sediment_max - sediment_min
+    else:
+        sediment_min = np.min(sediment_thickness)
+        sediment_max = np.max(sediment_thickness)
+        sediment_range_val = sediment_max - sediment_min
 
-    if sediment_range < 1e-6:
+    if sediment_range_val < 1e-6:
         # Uniform sediment - only need one bin
         sediment_levels = np.array([sediment_min])
         sediment_bins = 1
@@ -726,7 +745,7 @@ def generate_bathymetry_spatial_filter(seafloor_age, sediment_thickness, params,
     if sediment_bins == 1:
         sediment_bin_pos = np.zeros_like(sediment_thickness)
     else:
-        sediment_bin_width = sediment_range / (sediment_bins - 1)
+        sediment_bin_width = sediment_range_val / (sediment_bins - 1)
         sediment_bin_pos = (sediment_thickness - sediment_min) / sediment_bin_width
 
     if spreading_rate_bins == 1:
