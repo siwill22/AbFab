@@ -24,7 +24,7 @@ import AbFab as af
 # ============================================================================
 
 # Region selection (longitude, latitude bounds)
-XMIN, XMAX = -50, 150
+XMIN, XMAX = -180, 30
 YMIN, YMAX = -70, 50
 
 # Grid parameters
@@ -61,7 +61,7 @@ DPI = 300
 # ============================================================================
 
 def process_bathymetry_chunk(coord, age_dataarray, sed_dataarray, rand_dataarray,
-                             chunksize, chunkpad, params, grid_spacing_km, filter_type='gaussian',
+                             chunksize, chunkpad, params, lon_spacing_deg, filter_type='gaussian',
                              optimize=True, azimuth_bins=36, sediment_bins=5,
                              spreading_rate_bins=1, base_params=None,
                              sediment_range=None, spreading_rate_range=None):
@@ -84,8 +84,8 @@ def process_bathymetry_chunk(coord, age_dataarray, sed_dataarray, rand_dataarray
         Padding pixels to handle edge effects
     params : dict
         Abyssal hill parameters
-    grid_spacing_km : float
-        Grid spacing in km/pixel
+    lon_spacing_deg : float
+        Longitude spacing in degrees (for spherical correction)
     filter_type : str
         'gaussian' or 'von_karman'
     optimize : bool
@@ -120,6 +120,11 @@ def process_bathymetry_chunk(coord, age_dataarray, sed_dataarray, rand_dataarray
     if np.all(np.isnan(chunk_age.data)):
         return chunk_age
 
+    # Calculate grid spacing at chunk's mean latitude (Phase 2: spherical correction)
+    chunk_lat_coords = chunk_age.lat.values
+    mean_lat = float(np.mean(chunk_lat_coords))
+    grid_spacing_km = lon_spacing_deg * 111.32 * np.cos(np.radians(mean_lat))
+
     # Generate synthetic bathymetry
     synthetic_bathymetry = af.generate_bathymetry_spatial_filter(
         chunk_age.data,
@@ -134,7 +139,8 @@ def process_bathymetry_chunk(coord, age_dataarray, sed_dataarray, rand_dataarray
         spreading_rate_bins=spreading_rate_bins,
         base_params=base_params,
         sediment_range=sediment_range,
-        spreading_rate_range=spreading_rate_range
+        spreading_rate_range=spreading_rate_range,
+        lat_coords=chunk_lat_coords  # Phase 1: pass latitude for gradient corrections
     )
 
     # Trim padding and return
@@ -147,11 +153,16 @@ def process_bathymetry_chunk(coord, age_dataarray, sed_dataarray, rand_dataarray
 
 
 def process_method(method_name, age_da, sed_da, rand_da, coords, chunksize, chunkpad,
-                   params, grid_spacing_km, filter_type='gaussian',
+                   params, lon_spacing_deg, filter_type='gaussian',
                    spreading_rate_bins=1, base_params=None,
                    sediment_range=None, spreading_rate_range=None):
     """
     Process all chunks for a given method.
+
+    Parameters
+    ----------
+    lon_spacing_deg : float
+        Longitude spacing in degrees (for spherical correction)
 
     Returns
     -------
@@ -166,7 +177,7 @@ def process_method(method_name, age_da, sed_da, rand_da, coords, chunksize, chun
 
     start = time.time()
     results = Parallel(n_jobs=NUM_CPUS)(delayed(process_bathymetry_chunk)(
-        coord, age_da, sed_da, rand_da, chunksize, chunkpad, params, grid_spacing_km,
+        coord, age_da, sed_da, rand_da, chunksize, chunkpad, params, lon_spacing_deg,
         filter_type, USE_OPTIMIZATION, AZIMUTH_BINS, SEDIMENT_BINS,
         spreading_rate_bins, base_params, sediment_range, spreading_rate_range
     ) for coord in coords)
@@ -221,11 +232,13 @@ def main():
     rand_da = age_da.copy()
     rand_da.data = af.generate_random_field(rand_da.data.shape)
 
-    # Calculate grid spacing
+    # Calculate longitude spacing for spherical corrections
     lon_spacing_deg = float(np.abs(age_da.lon.values[1] - age_da.lon.values[0]))
     mean_lat = float(np.mean(age_da.lat.values))
     grid_spacing_km = lon_spacing_deg * 111.32 * np.cos(np.radians(mean_lat))
-    print(f"Grid spacing: {grid_spacing_km:.3f} km/pixel")
+    print(f"Longitude spacing: {lon_spacing_deg:.4f}°")
+    print(f"Grid spacing at mean latitude ({mean_lat:.1f}°): {grid_spacing_km:.3f} km/pixel")
+    print(f"  (Note: Per-chunk spacing will vary with latitude for spherical correction)")
 
     # Generate chunk coordinates
     full_ny, full_nx = age_da.shape
@@ -246,7 +259,7 @@ def main():
     results_method1, time1 = process_method(
         "METHOD 1: Fixed Parameters + Gaussian Filter",
         age_da, sed_da, rand_da, coords, CHUNKSIZE, chunkpad,
-        PARAMS_FIXED, grid_spacing_km,
+        PARAMS_FIXED, lon_spacing_deg,
         filter_type='gaussian',
         spreading_rate_bins=1,
         base_params=None,
@@ -261,10 +274,12 @@ def main():
     print("METHOD 2: Median Spreading Rate Parameters + Gaussian Filter")
     print("="*70)
 
-    # Calculate median spreading rate
-    spreading_rate = af.calculate_spreading_rate_from_age(age_da.data, grid_spacing_km)
+    # Calculate median spreading rate with spherical correction
+    spreading_rate = af.calculate_spreading_rate_from_age(
+        age_da.data, grid_spacing_km, lat_coords=age_da.lat.values
+    )
     median_rate = np.nanmedian(spreading_rate)
-    print(f"Median spreading rate: {median_rate:.1f} mm/yr")
+    print(f"Median spreading rate: {median_rate:.1f} mm/yr (with spherical correction)")
 
     # Derive parameters
     params_derived = af.spreading_rate_to_params(median_rate, base_params=PARAMS_FIXED)
@@ -274,7 +289,7 @@ def main():
     results_method2, time2 = process_method(
         "",  # Already printed header
         age_da, sed_da, rand_da, coords, CHUNKSIZE, chunkpad,
-        params_derived, grid_spacing_km,
+        params_derived, lon_spacing_deg,
         filter_type='gaussian',
         spreading_rate_bins=1,
         base_params=None,
@@ -288,7 +303,7 @@ def main():
     results_method3, time3 = process_method(
         "METHOD 3: Fixed Parameters + von Kármán Filter",
         age_da, sed_da, rand_da, coords, CHUNKSIZE, chunkpad,
-        PARAMS_FIXED, grid_spacing_km,
+        PARAMS_FIXED, lon_spacing_deg,
         filter_type='von_karman',
         spreading_rate_bins=1,
         base_params=None,
@@ -303,9 +318,11 @@ def main():
     print("METHOD 4: Spatially Varying Spreading Rate + Global Binning")
     print("="*70)
 
-    # Calculate global ranges for consistent binning
+    # Calculate global ranges for consistent binning with spherical correction
     print("Calculating global bin ranges...")
-    spreading_rate_global = af.calculate_spreading_rate_from_age(age_da.data, grid_spacing_km)
+    spreading_rate_global = af.calculate_spreading_rate_from_age(
+        age_da.data, grid_spacing_km, lat_coords=age_da.lat.values
+    )
     spreading_rate_global = np.where(np.isnan(spreading_rate_global),
                                       np.nanmedian(spreading_rate_global),
                                       spreading_rate_global)
@@ -315,14 +332,14 @@ def main():
     sed_min_global = float(np.min(sed_da.data))
     sed_max_global = float(np.max(sed_da.data))
 
-    print(f"  Global spreading rate range: {sr_min_global:.1f} - {sr_max_global:.1f} mm/yr")
+    print(f"  Global spreading rate range: {sr_min_global:.1f} - {sr_max_global:.1f} mm/yr (spherical corrected)")
     print(f"  Global sediment range: {sed_min_global:.1f} - {sed_max_global:.1f} m")
     print(f"  Spreading rate bins: {SPREADING_RATE_BINS}")
 
     results_method4, time4 = process_method(
         "",  # Already printed header
         age_da, sed_da, rand_da, coords, CHUNKSIZE, chunkpad,
-        PARAMS_FIXED, grid_spacing_km,
+        PARAMS_FIXED, lon_spacing_deg,
         filter_type='gaussian',
         spreading_rate_bins=SPREADING_RATE_BINS,
         base_params=PARAMS_FIXED,

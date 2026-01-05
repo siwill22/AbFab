@@ -137,7 +137,7 @@ def modify_by_sediment(H, lambda_n, lambda_s, sediment_thickness, D=None):
     return H_sed, lambda_n_sed, lambda_s_sed
 
 # Azimuth calculation from seafloor age gradient
-def calculate_azimuth_from_age(seafloor_age):
+def calculate_azimuth_from_age(seafloor_age, lat_coords=None):
     """
     Calculate the azimuth from the gradient of seafloor age.
 
@@ -152,22 +152,50 @@ def calculate_azimuth_from_age(seafloor_age):
     -----------
     seafloor_age : 2D array
         Seafloor age in Myr
+    lat_coords : 1D array, optional
+        Latitude coordinates in degrees (for spherical correction).
+        If None, assumes Cartesian coordinates (may be inaccurate at high latitudes).
 
     Returns:
     --------
     azimuth : 2D array
         Spreading direction azimuth in radians (measured clockwise from north)
+
+    Notes:
+    ------
+    Spherical Correction:
+    When lat_coords is provided, corrects for longitude spacing contraction
+    at high latitudes. At latitude φ, longitude spacing contracts by cos(φ),
+    so the age gradient in longitude direction must be corrected:
+        grad_lon_physical = grad_lon_index / cos(φ)
+
+    This correction is essential for accurate azimuth at |lat| > 30°.
     """
-    # Compute the gradients in x and y direction
+    # Compute the gradients in y (lat) and x (lon) direction
     grad_y, grad_x = np.gradient(seafloor_age)
-    
+
+    # Apply spherical correction if latitude coordinates provided
+    if lat_coords is not None:
+        # Broadcast latitude to 2D
+        lat_2d = np.broadcast_to(lat_coords[:, np.newaxis], seafloor_age.shape)
+
+        # Correct longitude gradient for spherical distortion
+        # At latitude φ, 1° lon = cos(φ) × 1° at equator
+        # So age gradient per physical distance = age gradient per index / cos(φ)
+        cos_lat = np.cos(np.radians(lat_2d))
+
+        # Avoid division by zero at poles (shouldn't have data there anyway)
+        cos_lat = np.maximum(cos_lat, 1e-10)
+
+        grad_x = grad_x / cos_lat
+
     # Compute azimuth as the angle of the gradient vector (radians)
     azimuth = np.arctan2(grad_y, grad_x)
 
     return azimuth
 
 
-def calculate_spreading_rate_from_age(seafloor_age, grid_spacing_km=1.0):
+def calculate_spreading_rate_from_age(seafloor_age, grid_spacing_km=1.0, lat_coords=None):
     """
     Estimate half-spreading rate from seafloor age gradient.
 
@@ -176,7 +204,11 @@ def calculate_spreading_rate_from_age(seafloor_age, grid_spacing_km=1.0):
     seafloor_age : 2D array
         Seafloor age in Myr
     grid_spacing_km : float, optional
-        Grid spacing in km (default: 1.0 km). Needed to convert gradient to physical units.
+        Grid spacing in km at the equator or mean latitude (default: 1.0 km).
+        If lat_coords is provided, this is the longitude spacing.
+    lat_coords : 1D array, optional
+        Latitude coordinates in degrees (for spherical correction).
+        If provided, accounts for longitude spacing variation with latitude.
 
     Returns:
     --------
@@ -185,29 +217,57 @@ def calculate_spreading_rate_from_age(seafloor_age, grid_spacing_km=1.0):
 
     Notes:
     ------
+    Spherical Correction:
+    When lat_coords is provided, the function accounts for longitude spacing
+    contraction at high latitudes. The physical distance for one grid cell in
+    longitude direction is: dx_physical = grid_spacing_km × cos(lat)
+
+    This ensures accurate spreading rate calculations at all latitudes.
+
     Half-spreading rate u = distance / (2 × time)
     From age gradient: u = (grid_spacing / age_gradient) / 2
-    where age_gradient is in Myr per grid cell.
     """
-    # Compute the gradients in x and y direction (Myr per grid cell)
+    # Compute the gradients in y (lat) and x (lon) direction (Myr per grid cell)
     grad_y, grad_x = np.gradient(seafloor_age)
 
-    # Magnitude of age gradient (Myr per grid cell)
-    age_gradient_magnitude = np.sqrt(grad_x**2 + grad_y**2)
+    # Apply spherical correction if latitude coordinates provided
+    if lat_coords is not None:
+        # Broadcast latitude to 2D
+        lat_2d = np.broadcast_to(lat_coords[:, np.newaxis], seafloor_age.shape)
+
+        # Physical grid spacing varies with latitude
+        # Longitude: dx = grid_spacing_km × cos(lat)
+        # Latitude: dy = grid_spacing_km (constant)
+        cos_lat = np.cos(np.radians(lat_2d))
+        cos_lat = np.maximum(cos_lat, 1e-10)  # Avoid division by zero at poles
+
+        dx_km = grid_spacing_km * cos_lat
+        dy_km = grid_spacing_km  # Latitude spacing is constant
+
+        # Convert gradients from (Myr per index) to (Myr per km)
+        grad_x_per_km = grad_x / dx_km  # Myr/km in longitude direction
+        grad_y_per_km = grad_y / dy_km  # Myr/km in latitude direction
+
+        # Magnitude of age gradient in physical space (Myr/km)
+        age_gradient_magnitude = np.sqrt(grad_x_per_km**2 + grad_y_per_km**2)
+    else:
+        # No spherical correction - assume Cartesian
+        age_gradient_magnitude = np.sqrt(grad_x**2 + grad_y**2)
+
+        # Convert from (Myr per index) to (Myr per km)
+        age_gradient_magnitude = age_gradient_magnitude / grid_spacing_km
 
     # Avoid division by zero
     age_gradient_magnitude = np.where(age_gradient_magnitude > 1e-10, age_gradient_magnitude, np.nan)
 
-    # Half-spreading rate: distance = rate × time
-    # So: rate = distance / time
-    # distance per grid cell = grid_spacing_km
-    # time per grid cell = age_gradient_magnitude (Myr per grid cell)
-    # rate = grid_spacing_km / age_gradient_magnitude (km/Myr)
+    # Half-spreading rate: rate = distance / time
+    # age_gradient_magnitude is in Myr/km
+    # So: rate = 1 / age_gradient_magnitude (km/Myr)
     #
     # Convert km/Myr to mm/yr:
     # 1 km/Myr = 1000 m / 1e6 yr = 1e-3 m/yr = 1 mm/yr
     # So km/Myr and mm/yr are numerically equivalent!
-    spreading_rate = grid_spacing_km / age_gradient_magnitude  # km/Myr = mm/yr
+    spreading_rate = 1.0 / age_gradient_magnitude  # km/Myr = mm/yr
 
     return spreading_rate
 
@@ -557,7 +617,7 @@ def generate_bathymetry_spatial_filter_original(seafloor_age, sediment_thickness
 def generate_bathymetry_spatial_filter(seafloor_age, sediment_thickness, params, grid_spacing_km, random_field=None,
                                        filter_type='gaussian', azimuth_bins=36, sediment_bins=5,
                                        spreading_rate_bins=5, base_params=None, optimize=True,
-                                       sediment_range=None, spreading_rate_range=None):
+                                       sediment_range=None, spreading_rate_range=None, lat_coords=None):
     """
     Generate synthetic bathymetry using a spatially varying filter based on von Kármán model.
 
@@ -610,6 +670,10 @@ def generate_bathymetry_spatial_filter(seafloor_age, sediment_thickness, params,
         Global (min, max) spreading rate range for consistent binning across chunks.
         If None, uses local min/max from this chunk.
         Format: (sr_min, sr_max)
+    lat_coords : 1D array, optional
+        Latitude coordinates in degrees for spherical Earth corrections.
+        If provided, applies cos(lat) correction to longitude gradients.
+        If None, assumes Cartesian coordinates (suitable for small regions).
 
     Returns:
     --------
@@ -645,11 +709,11 @@ def generate_bathymetry_spatial_filter(seafloor_age, sediment_thickness, params,
     if base_params is None:
         base_params = params
 
-    # Calculate azimuth from seafloor age gradient
-    azimuth = calculate_azimuth_from_age(seafloor_age)
+    # Calculate azimuth from seafloor age gradient (with spherical correction if lat_coords provided)
+    azimuth = calculate_azimuth_from_age(seafloor_age, lat_coords=lat_coords)
 
-    # Calculate spreading rate from seafloor age gradient
-    spreading_rate = calculate_spreading_rate_from_age(seafloor_age, grid_spacing_km)
+    # Calculate spreading rate from seafloor age gradient (with spherical correction if lat_coords provided)
+    spreading_rate = calculate_spreading_rate_from_age(seafloor_age, grid_spacing_km, lat_coords=lat_coords)
 
     # Handle NaN values in spreading rate (e.g., from uniform age)
     spreading_rate_valid = spreading_rate[~np.isnan(spreading_rate)]
