@@ -163,3 +163,4 @@ test_optimization.py
 test_optimization_visual.ipynb
 .DS_Store
 .vscode/settings.json
+*.cache
