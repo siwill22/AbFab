@@ -164,3 +164,5 @@ test_optimization_visual.ipynb
 .DS_Store
 .vscode/settings.json
 *.cache
+method4_bathymetry.gpml
+method4_bathymetry.nc
