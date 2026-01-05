@@ -24,8 +24,8 @@ import AbFab as af
 # ============================================================================
 
 # Region selection (longitude, latitude bounds)
-XMIN, XMAX = -180, 30
-YMIN, YMAX = -70, 50
+XMIN, XMAX = -180, 180
+YMIN, YMAX = -80, 80
 
 # Grid parameters
 SPACING = '2m'  # Grid spacing (e.g., '2m' = 2 arcmin)
@@ -54,6 +54,7 @@ RANDOM_SEED = 42
 
 # Output
 OUTPUT_FILE = 'tiling_comparison_4methods.png'
+NETCDF_FILE = 'method4_bathymetry.nc'
 DPI = 300
 
 # ============================================================================
@@ -354,7 +355,7 @@ def main():
     print("Generating comparison figure...")
     print("="*70)
 
-    fig, axes = plt.subplots(2, 2, figsize=(30, 30))
+    fig, axes = plt.subplots(2, 2, figsize=(30, 24))
 
     axes = axes.flatten()
     vmin, vmax = -1, 1
@@ -402,6 +403,50 @@ def main():
     plt.tight_layout()
     plt.savefig(OUTPUT_FILE, dpi=DPI, bbox_inches='tight')
     print(f"\n✓ Saved: {OUTPUT_FILE}")
+
+    # ========================================================================
+    # SAVE METHOD 4 TO NETCDF
+    # ========================================================================
+    print("\n" + "="*70)
+    print("Saving Method 4 grid to NetCDF...")
+    print("="*70)
+
+    # Combine chunks into a single DataArray
+    # Get the full coordinate arrays from the original age data
+    output_grid = xr.DataArray(
+        np.full((full_ny, full_nx), np.nan),
+        coords={'lat': age_da.lat, 'lon': age_da.lon},
+        dims=['lat', 'lon'],
+        name='synthetic_bathymetry',
+        attrs={
+            'long_name': 'Synthetic abyssal hill bathymetry',
+            'units': 'm',
+            'method': 'Spatially varying spreading rate with global binning',
+            'base_H': PARAMS_FIXED['H'],
+            'base_lambda_n': PARAMS_FIXED['lambda_n'],
+            'base_lambda_s': PARAMS_FIXED['lambda_s'],
+            'base_D': PARAMS_FIXED['D'],
+            'spreading_rate_bins': SPREADING_RATE_BINS,
+            'azimuth_bins': AZIMUTH_BINS,
+            'sediment_bins': SEDIMENT_BINS,
+            'spherical_correction': 'enabled',
+            'random_seed': RANDOM_SEED
+        }
+    )
+
+    # Fill in the chunks
+    for res in results_method4:
+        lat_slice = slice(res.lat.values[0], res.lat.values[-1])
+        lon_slice = slice(res.lon.values[0], res.lon.values[-1])
+        output_grid.loc[{'lat': lat_slice, 'lon': lon_slice}] = res.data
+
+    # Save to NetCDF
+    output_grid.to_netcdf(NETCDF_FILE)
+    print(f"✓ Saved Method 4 grid to: {NETCDF_FILE}")
+    print(f"  Grid shape: {output_grid.shape}")
+    print(f"  Lat range: {float(output_grid.lat.min()):.2f}° to {float(output_grid.lat.max()):.2f}°")
+    print(f"  Lon range: {float(output_grid.lon.min()):.2f}° to {float(output_grid.lon.max()):.2f}°")
+    print(f"  Valid pixels: {np.sum(~np.isnan(output_grid.data))}/{output_grid.size}")
 
     # Print summary
     print("\n" + "="*70)
