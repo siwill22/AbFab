@@ -243,6 +243,10 @@ def apply_diffusive_sediment_infill(basement_topo, sediment_thickness, grid_spac
         mean_sigma = np.mean(local_sigma[valid_mask])
         smoothed_basement = gaussian_filter(smoothed_basement, sigma=mean_sigma, mode='nearest')
 
+        # Progress feedback for user
+        if n_iterations > 1:
+            print(f"    Diffusion iteration {i+1}/{n_iterations} (sigma={mean_sigma:.2f} pixels)")
+
     # The smoothed basement represents where sediment would naturally level off
     # Now add sediment: basement moves up by sediment thickness
     # But use weighted combination: more smoothing where more sediment
