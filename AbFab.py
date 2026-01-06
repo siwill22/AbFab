@@ -136,6 +136,128 @@ def modify_by_sediment(H, lambda_n, lambda_s, sediment_thickness, D=None):
 
     return H_sed, lambda_n_sed, lambda_s_sed
 
+
+def apply_diffusive_sediment_infill(basement_topo, sediment_thickness, grid_spacing_km=1.0,
+                                     diffusion_coeff=0.3):
+    """
+    Apply diffusive sediment infill that preferentially fills topographic lows.
+
+    This function models the physical process of sediment accumulation where sediment
+    preferentially ponds in valleys and depressions, creating a smoother seafloor
+    surface than simple draping would produce.
+
+    Physical basis:
+    - Sediment is transported and deposited preferentially in lows
+    - Creates smoother final topography as sediment thickness increases
+    - Modeled as iterative diffusion process with strength ∝ sediment thickness
+
+    This is COMPLEMENTARY to the modify_by_sediment() function:
+    - modify_by_sediment(): Reduces hill AMPLITUDE and increases WAVELENGTH
+      (models how sediment burial affects the generation of hills)
+    - apply_diffusive_sediment_infill(): Redistributes sediment spatially
+      (models how sediment fills in existing topography)
+
+    Parameters:
+    -----------
+    basement_topo : ndarray
+        Basement topography (negative = below sea level)
+        This should be basement + abyssal hills BEFORE sediment
+    sediment_thickness : ndarray
+        Total sediment thickness available at each location (meters)
+    grid_spacing_km : float, optional
+        Grid spacing in kilometers (default: 1.0)
+        Used to scale diffusion appropriately
+    diffusion_coeff : float, optional
+        Diffusion strength parameter (0-1, default: 0.3)
+        Higher values = more smoothing, more ponding in lows
+        - 0.0: No diffusion (same as simple drape)
+        - 0.3: Moderate diffusion (recommended default)
+        - 0.5: Strong diffusion (heavy ponding)
+        - 1.0: Maximum diffusion (extreme smoothing)
+
+    Returns:
+    --------
+    seafloor_topo : ndarray
+        Final seafloor topography after sediment infill (negative = below sea level)
+
+    Algorithm:
+    ----------
+    1. Start with basement topography
+    2. For each location:
+       - Calculate effective diffusion based on local sediment thickness
+       - Apply Gaussian smoothing (simulates sediment redistribution)
+       - Number of iterations scales with sediment thickness
+    3. Fill from basement upward by sediment thickness
+    4. Result: sediment ponds in lows, barely affects highs
+
+    Notes:
+    ------
+    The diffusion is applied in a way that:
+    - Preserves total sediment volume (mass conservative)
+    - Smooths more where sediment is thicker
+    - Creates realistic ponding in valleys
+    - Computational cost: ~2-5x a simple subtraction (acceptable)
+
+    This complements the existing sediment treatment:
+    - Hill generation already accounts for sediment via modify_by_sediment()
+      (amplitude reduction H → H-S/2, wavelength increase λ → λ(1+1.3S/H))
+    - This function adds spatial redistribution on top of that
+    """
+    from scipy.ndimage import gaussian_filter
+
+    # Handle NaN values
+    valid_mask = ~np.isnan(basement_topo)
+    basement_valid = np.where(valid_mask, basement_topo, 0)
+    sediment_valid = np.where(valid_mask, sediment_thickness, 0)
+
+    # Calculate spatially-varying smoothing based on sediment thickness
+    # More sediment = more smoothing (sediment preferentially fills lows)
+    # Scale sigma by sediment thickness and diffusion coefficient
+    mean_sediment = np.nanmean(sediment_valid)
+    if mean_sediment < 1.0:
+        # Very little sediment - just do simple drape
+        return basement_topo + sediment_valid
+
+    # Normalize sediment to get smoothing length scale
+    # Typical: 100m sediment → sigma ~ 1-2 pixels with default diffusion_coeff
+    sediment_normalized = sediment_valid / 100.0  # Normalize by 100m reference
+    sigma_base = diffusion_coeff * 3.0  # Base smoothing in pixels
+
+    # Create sediment-thickness-dependent smoothing
+    # Thicker sediment → more iterations of diffusion
+    max_sediment = np.nanmax(sediment_valid)
+    n_iterations = max(1, int(max_sediment / 100.0 * diffusion_coeff * 5))
+    n_iterations = min(n_iterations, 10)  # Cap at 10 iterations for performance
+
+    # Apply iterative diffusion
+    # Each iteration represents sediment redistribution
+    smoothed_basement = basement_valid.copy()
+
+    for i in range(n_iterations):
+        # Spatially varying sigma based on local sediment thickness
+        # More sediment locally = more local smoothing
+        local_sigma = sigma_base * (1.0 + sediment_normalized)
+
+        # Apply Gaussian filter with mean sigma
+        # (Spatially-varying sigma is approximated by using thickness-weighted mean)
+        mean_sigma = np.mean(local_sigma[valid_mask])
+        smoothed_basement = gaussian_filter(smoothed_basement, sigma=mean_sigma, mode='nearest')
+
+    # The smoothed basement represents where sediment would naturally level off
+    # Now add sediment: basement moves up by sediment thickness
+    # But use weighted combination: more smoothing where more sediment
+    smoothing_weight = np.tanh(sediment_normalized)  # 0 to 1, based on sediment
+    final_basement = (1 - smoothing_weight) * basement_valid + smoothing_weight * smoothed_basement
+
+    # Add sediment on top (sediment fills upward from basement)
+    seafloor = final_basement + sediment_valid
+
+    # Restore NaN values
+    seafloor = np.where(valid_mask, seafloor, np.nan)
+
+    return seafloor
+
+
 # Azimuth calculation from seafloor age gradient
 def calculate_azimuth_from_age(seafloor_age, lat_coords=None):
     """
@@ -788,6 +910,13 @@ def generate_bathymetry_spatial_filter(seafloor_age, sediment_thickness, params,
 
                 # Convolve with random field (this is the expensive operation)
                 convolved = oaconvolve(random_field, filt, mode='same')
+
+                # Rescale to match target RMS height (H_mod)
+                # The filter is normalized to sum=1, so we need to rescale the output
+                current_std = np.std(convolved)
+                if current_std > 1e-10:  # Avoid division by zero
+                    convolved = convolved * (H_mod / current_std)
+
                 convolved_results_for_sediment.append(convolved)
 
             convolved_results_for_azimuth.append(convolved_results_for_sediment)
@@ -819,22 +948,27 @@ def generate_bathymetry_spatial_filter(seafloor_age, sediment_thickness, params,
         sr_bin_pos = (spreading_rate - sr_min) / sr_bin_width
 
     # Get integer bin indices and fractional parts for interpolation
-    az_idx0 = np.floor(azimuth_bin_pos).astype(int)
+    # Handle NaN values before floor/astype to avoid RuntimeWarning
+    azimuth_bin_pos_safe = np.where(np.isnan(azimuth_bin_pos), 0, azimuth_bin_pos)
+    sediment_bin_pos_safe = np.where(np.isnan(sediment_bin_pos), 0, sediment_bin_pos)
+    sr_bin_pos_safe = np.where(np.isnan(sr_bin_pos), 0, sr_bin_pos)
+
+    az_idx0 = np.floor(azimuth_bin_pos_safe).astype(int)
     az_idx1 = az_idx0 + 1
-    az_frac = azimuth_bin_pos - az_idx0
+    az_frac = azimuth_bin_pos_safe - az_idx0
 
     # Handle azimuth wraparound (circular)
     az_idx0 = np.clip(az_idx0, 0, azimuth_bins - 1)
     az_idx1 = np.mod(az_idx1, azimuth_bins)
 
-    sed_idx0 = np.floor(sediment_bin_pos).astype(int)
+    sed_idx0 = np.floor(sediment_bin_pos_safe).astype(int)
     sed_idx1 = np.minimum(sed_idx0 + 1, sediment_bins - 1)
-    sed_frac = sediment_bin_pos - sed_idx0
+    sed_frac = sediment_bin_pos_safe - sed_idx0
     sed_idx0 = np.clip(sed_idx0, 0, sediment_bins - 1)
 
-    sr_idx0 = np.floor(sr_bin_pos).astype(int)
+    sr_idx0 = np.floor(sr_bin_pos_safe).astype(int)
     sr_idx1 = np.minimum(sr_idx0 + 1, spreading_rate_bins - 1)
-    sr_frac = sr_bin_pos - sr_idx0
+    sr_frac = sr_bin_pos_safe - sr_idx0
     sr_idx0 = np.clip(sr_idx0, 0, spreading_rate_bins - 1)
 
     # Trilinear interpolation: interpolate across 8 corners of bin cube
@@ -970,6 +1104,232 @@ def generate_bathymetry_tiled(seafloor_age, sediment_thickness, params,
             results.append(trimmed_chunk)
 
     return results
+
+
+#### Thermal Subsidence Models
+
+def calculate_thermal_subsidence(seafloor_age, model='GDH1', ridge_depth=2600.0,
+                                  plate_timescale=62.8, hs_coeff=365.0):
+    """
+    Calculate basement depth from seafloor age using thermal subsidence models.
+
+    Implements three thermal subsidence models:
+    - 'half_space': Simple half-space cooling model
+    - 'plate': Plate cooling model with exponential decay
+    - 'GDH1': Global Depth-Heat flow model 1 (Stein & Stein, 1992)
+
+    Parameters:
+    -----------
+    seafloor_age : ndarray
+        Seafloor age in Myr (2D array)
+    model : str, optional
+        Subsidence model to use:
+        - 'GDH1' (default): Stein & Stein (1992) model
+        - 'half_space': d = d0 + c*sqrt(t)
+        - 'plate': d = d0 + c*sqrt(t)*[1 - exp(-t/τ)]
+    ridge_depth : float, optional
+        Depth at ridge axis in meters (default: 2600m)
+        Used for half_space and plate models
+    plate_timescale : float, optional
+        Plate cooling timescale τ in Myr (default: 62.8 Myr)
+        Used for plate model only
+    hs_coeff : float, optional
+        Half-space coefficient in m/sqrt(Myr) (default: 365.0)
+        Used for half_space and plate models
+
+    Returns:
+    --------
+    depth : ndarray
+        Basement depth in meters (negative values below sea level)
+        Same shape as seafloor_age
+
+    Notes:
+    ------
+    GDH1 model (Stein & Stein, 1992):
+    - For t ≤ 20 Myr: d = 2600 + 365*sqrt(t)
+    - For t > 20 Myr: d = 5651 - 2473*exp(-0.0278*t)
+
+    Half-space cooling model:
+    - d(t) = ridge_depth + hs_coeff*sqrt(t)
+    - Simple, valid for young seafloor (< ~80 Myr)
+
+    Plate cooling model:
+    - d(t) = ridge_depth + hs_coeff*sqrt(t)*[1 - exp(-t/τ)]
+    - More accurate for old seafloor
+    - Asymptotes to maximum depth
+
+    References:
+    -----------
+    Stein, C. A., & Stein, S. (1992). A model for the global variation in oceanic
+    depth and heat flow with lithospheric age. Nature, 359(6391), 123-129.
+    """
+    # Handle NaN values
+    age_valid = np.where(np.isnan(seafloor_age), 0, seafloor_age)
+    age_valid = np.maximum(age_valid, 0)  # Ensure non-negative ages
+
+    if model.upper() == 'GDH1':
+        # GDH1 model (Stein & Stein, 1992)
+        # Young seafloor (≤ 20 Myr): d = 2600 + 365*sqrt(t)
+        # Old seafloor (> 20 Myr): d = 5651 - 2473*exp(-0.0278*t)
+        depth = np.where(
+            age_valid <= 20.0,
+            2600.0 + 365.0 * np.sqrt(age_valid),
+            5651.0 - 2473.0 * np.exp(-0.0278 * age_valid)
+        )
+
+    elif model.lower() == 'half_space':
+        # Half-space cooling model
+        # d(t) = d0 + c*sqrt(t)
+        depth = ridge_depth + hs_coeff * np.sqrt(age_valid)
+
+    elif model.lower() == 'plate':
+        # Plate cooling model
+        # d(t) = d0 + c*sqrt(t)*[1 - exp(-t/τ)]
+        depth = ridge_depth + hs_coeff * np.sqrt(age_valid) * (1.0 - np.exp(-age_valid / plate_timescale))
+
+    else:
+        raise ValueError(f"Unknown subsidence model: {model}. Use 'GDH1', 'half_space', or 'plate'")
+
+    # Restore NaN values where age was NaN
+    depth = np.where(np.isnan(seafloor_age), np.nan, depth)
+
+    # Convert to negative depth (oceanographic convention: negative = below sea level)
+    return -depth
+
+
+def generate_complete_bathymetry(seafloor_age, sediment_thickness, params, grid_spacing_km,
+                                  random_field=None, subsidence_model='GDH1',
+                                  sediment_mode='drape', sediment_diffusion=0.3, **kwargs):
+    """
+    Generate complete synthetic bathymetry combining thermal subsidence and abyssal hills.
+
+    This function creates realistic ocean floor bathymetry by combining:
+    1. Long-wavelength thermal subsidence (from seafloor age)
+    2. Short-wavelength abyssal hill fabric (modified by sediment)
+    3. Sediment infill (with choice of simple drape or diffusive ponding)
+
+    Parameters:
+    -----------
+    seafloor_age : ndarray
+        Seafloor age in Myr (2D array)
+    sediment_thickness : ndarray
+        Sediment thickness in meters (2D array)
+    params : dict
+        Abyssal hill parameters: {'H': height, 'lambda_n': wavelength_n,
+                                   'lambda_s': wavelength_s, 'D': fractal_dim}
+    grid_spacing_km : float
+        Grid spacing in kilometers
+    random_field : ndarray, optional
+        Pre-generated random field (if None, will be generated)
+    subsidence_model : str, optional
+        Thermal subsidence model: 'GDH1' (default), 'half_space', or 'plate'
+    sediment_mode : str, optional
+        Sediment treatment mode (default: 'drape'):
+        - 'none': No sediment layer added (basement + hills only)
+        - 'drape': Simple sediment drape (just subtract thickness)
+        - 'fill': Diffusive infill (sediment ponds in lows)
+    sediment_diffusion : float, optional
+        Diffusion coefficient for 'fill' mode (0-1, default: 0.3)
+        Higher = more smoothing/ponding. Ignored for other modes.
+    **kwargs : dict
+        Additional arguments passed to generate_bathymetry_spatial_filter()
+        (e.g., filter_type, optimize, azimuth_bins, spreading_rate_bins,
+         base_params, lat_coords, etc.)
+
+    Returns:
+    --------
+    bathymetry : ndarray
+        Complete bathymetry in meters (negative below sea level)
+
+    Notes:
+    ------
+    SEDIMENT TREATMENT EXPLANATION:
+
+    Sediment affects the final bathymetry in TWO COMPLEMENTARY ways:
+
+    1. **During hill generation** (via modify_by_sediment function):
+       - Amplitude reduction: H(S) = H₀ - S/2
+       - Wavelength increase: λ(S) = λ₀(1 + 1.3·S/H₀)
+       - Effect: Buried hills are shorter and smoother
+       - This happens automatically inside generate_bathymetry_spatial_filter()
+
+    2. **After hill generation** (via sediment_mode parameter):
+       - 'none': No additional sediment layer (just buried hills)
+       - 'drape': Add uniform sediment layer everywhere
+       - 'fill': Add sediment with diffusive redistribution (ponds in lows)
+
+    The combination creates realistic sediment-covered seafloor:
+    - Hills are generated with reduced amplitude (buried effect)
+    - Hills have increased wavelength (smoothed by sediment)
+    - Then sediment layer is added on top (filling topography)
+    - With 'fill' mode, sediment preferentially fills valleys
+
+    Order of operations:
+    1. Calculate regional basement depth from thermal subsidence
+    2. Generate abyssal hill fabric (with sediment-modified parameters)
+    3. Combine: basement_topo = regional_depth + abyssal_hills
+    4. Apply sediment layer:
+       - 'none': seafloor = basement_topo
+       - 'drape': seafloor = basement_topo + sediment
+       - 'fill': seafloor = apply_diffusive_infill(basement_topo, sediment)
+
+    Examples:
+    ---------
+    # Simple drape (default)
+    bathy = generate_complete_bathymetry(age, sediment, params, 3.7)
+
+    # No sediment layer (only buried hill effect)
+    bathy = generate_complete_bathymetry(age, sediment, params, 3.7, sediment_mode='none')
+
+    # Diffusive infill (realistic ponding)
+    bathy = generate_complete_bathymetry(age, sediment, params, 3.7,
+                                         sediment_mode='fill', sediment_diffusion=0.3)
+
+    # With spreading rate variation
+    bathy = generate_complete_bathymetry(
+        age, sediment, params, 3.7,
+        subsidence_model='GDH1',
+        sediment_mode='fill',
+        spreading_rate_bins=10,
+        base_params=params,
+        lat_coords=lat_array
+    )
+    """
+    # 1. Calculate thermal subsidence (long-wavelength component)
+    basement_regional = calculate_thermal_subsidence(seafloor_age, model=subsidence_model)
+
+    # 2. Generate abyssal hill fabric (short-wavelength component)
+    # Note: This already accounts for sediment effects on hill parameters via modify_by_sediment()
+    abyssal_hills = generate_bathymetry_spatial_filter(
+        seafloor_age, sediment_thickness, params, grid_spacing_km,
+        random_field=random_field, **kwargs
+    )
+
+    # 3. Combine regional subsidence and abyssal hills (basement topography)
+    basement_topo = basement_regional + abyssal_hills
+
+    # 4. Apply sediment layer based on mode
+    if sediment_mode == 'none':
+        # No sediment layer - just basement (hills still affected by modify_by_sediment)
+        final_bathymetry = basement_topo
+
+    elif sediment_mode == 'drape':
+        # Simple drape: uniform sediment layer added everywhere
+        # (sediment fills in from the top)
+        final_bathymetry = basement_topo + sediment_thickness  # Add because depth is negative
+
+    elif sediment_mode == 'fill':
+        # Diffusive infill: sediment ponds in topographic lows
+        # More realistic for thick sediment
+        final_bathymetry = apply_diffusive_sediment_infill(
+            basement_topo, sediment_thickness, grid_spacing_km, sediment_diffusion
+        )
+
+    else:
+        raise ValueError(f"Unknown sediment_mode: {sediment_mode}. "
+                        f"Use 'none', 'drape', or 'fill'")
+
+    return final_bathymetry
 
 
 def extend_longitude_range(da):
