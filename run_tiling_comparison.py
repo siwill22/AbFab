@@ -440,6 +440,9 @@ def main():
         lon_slice = slice(res.lon.values[0], res.lon.values[-1])
         output_grid.loc[{'lat': lat_slice, 'lon': lon_slice}] = res.data
 
+    # Add CF-compliant coordinate metadata
+    output_grid = af.add_cf_compliant_coordinate_attrs(output_grid)
+
     # Save to NetCDF
     output_grid.to_netcdf(NETCDF_FILE)
     print(f"✓ Saved Method 4 grid to: {NETCDF_FILE}")
