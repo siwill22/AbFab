@@ -739,7 +739,10 @@ def generate_bathymetry_spatial_filter_original(seafloor_age, sediment_thickness
 def generate_bathymetry_spatial_filter(seafloor_age, sediment_thickness, params, grid_spacing_km, random_field=None,
                                        filter_type='gaussian', azimuth_bins=36, sediment_bins=5,
                                        spreading_rate_bins=5, base_params=None, optimize=True,
-                                       sediment_range=None, spreading_rate_range=None, lat_coords=None):
+                                       sediment_range=None, spreading_rate_range=None, lat_coords=None,
+                                       sediment_levels=None, spreading_rate_levels=None,
+                                       spreading_rate_fill_value=None,
+                                       azimuth_field=None, spreading_rate_field=None):
     """
     Generate synthetic bathymetry using a spatially varying filter based on von Kármán model.
 
@@ -796,6 +799,26 @@ def generate_bathymetry_spatial_filter(seafloor_age, sediment_thickness, params,
         Latitude coordinates in degrees for spherical Earth corrections.
         If provided, applies cos(lat) correction to longitude gradients.
         If None, assumes Cartesian coordinates (suitable for small regions).
+    sediment_levels : 1D array, optional
+        Pre-computed sediment bin levels to ensure consistency across chunks.
+        If provided, overrides sediment_bins and sediment_range for binning.
+        Should be created once globally and passed to all chunks.
+    spreading_rate_levels : 1D array, optional
+        Pre-computed spreading rate bin levels to ensure consistency across chunks.
+        If provided, overrides spreading_rate_bins and spreading_rate_range for binning.
+        Should be created once globally and passed to all chunks.
+    spreading_rate_fill_value : float, optional
+        Global value to use for filling NaN spreading rates (e.g., over land).
+        If None, uses local median per chunk (less consistent).
+        Recommended: pass global median from entire grid for consistency.
+    azimuth_field : 2D array, optional
+        Pre-computed azimuth field (radians) with same shape as inputs.
+        If provided, skips local azimuth calculation for perfect chunk consistency.
+        Should be calculated globally once before chunking.
+    spreading_rate_field : 2D array, optional
+        Pre-computed spreading rate field (mm/yr) with same shape as inputs.
+        If provided, skips local spreading rate calculation for perfect chunk consistency.
+        Should be calculated globally once before chunking.
 
     Returns:
     --------
@@ -831,56 +854,93 @@ def generate_bathymetry_spatial_filter(seafloor_age, sediment_thickness, params,
     if base_params is None:
         base_params = params
 
-    # Calculate azimuth from seafloor age gradient (with spherical correction if lat_coords provided)
-    azimuth = calculate_azimuth_from_age(seafloor_age, lat_coords=lat_coords)
-
-    # Calculate spreading rate from seafloor age gradient (with spherical correction if lat_coords provided)
-    spreading_rate = calculate_spreading_rate_from_age(seafloor_age, grid_spacing_km, lat_coords=lat_coords)
-
-    # Handle NaN values in spreading rate (e.g., from uniform age)
-    spreading_rate_valid = spreading_rate[~np.isnan(spreading_rate)]
-    if len(spreading_rate_valid) == 0:
-        # No valid spreading rate - use base params everywhere
-        spreading_rate = np.full_like(seafloor_age, 50.0)  # Default to 50 mm/yr
+    # Use pre-computed azimuth if provided, otherwise calculate from age gradient
+    if azimuth_field is not None:
+        azimuth = azimuth_field
     else:
-        # Fill NaN values with median
-        spreading_rate = np.where(np.isnan(spreading_rate),
-                                  np.nanmedian(spreading_rate),
-                                  spreading_rate)
+        # Calculate azimuth from seafloor age gradient (with spherical correction if lat_coords provided)
+        azimuth = calculate_azimuth_from_age(seafloor_age, lat_coords=lat_coords)
+
+    # Use pre-computed spreading rate if provided, otherwise calculate from age gradient
+    if spreading_rate_field is not None:
+        spreading_rate = spreading_rate_field
+    else:
+        # Calculate spreading rate from seafloor age gradient (with spherical correction if lat_coords provided)
+        spreading_rate = calculate_spreading_rate_from_age(seafloor_age, grid_spacing_km, lat_coords=lat_coords)
+
+    # Handle NaN values in spreading rate (e.g., from uniform age or land)
+    # Use global fill value if provided (for consistency across chunks)
+    if spreading_rate_fill_value is not None:
+        # Use the provided global fill value
+        fill_value = spreading_rate_fill_value
+    else:
+        # Calculate local median (less consistent across chunks)
+        spreading_rate_valid = spreading_rate[~np.isnan(spreading_rate)]
+        if len(spreading_rate_valid) == 0:
+            fill_value = 50.0  # Default to 50 mm/yr if no valid values
+        else:
+            fill_value = np.nanmedian(spreading_rate)
+
+    # Fill NaN values
+    spreading_rate = np.where(np.isnan(spreading_rate), fill_value, spreading_rate)
 
     # Bin spreading rate
-    # Use global range if provided (for consistent binning across chunks)
-    if spreading_rate_range is not None:
+    # Use pre-computed levels if provided (best for consistency across chunks)
+    if spreading_rate_levels is not None:
+        # Use the provided levels directly
+        spreading_rate_bins = len(spreading_rate_levels)
+        sr_min = spreading_rate_levels[0]
+        sr_max = spreading_rate_levels[-1]
+        sr_range = sr_max - sr_min
+    elif spreading_rate_range is not None:
+        # Use global range if provided (for consistent binning across chunks)
         sr_min, sr_max = spreading_rate_range
         sr_range = sr_max - sr_min
+        if sr_range < 1e-6 or spreading_rate_bins == 1:
+            # Uniform spreading rate or disabled - only need one bin
+            spreading_rate_levels = np.array([np.mean(spreading_rate)])
+            spreading_rate_bins = 1
+        else:
+            spreading_rate_levels = np.linspace(sr_min, sr_max, spreading_rate_bins)
     else:
+        # Use local range (less consistent across chunks)
         sr_min = np.min(spreading_rate)
         sr_max = np.max(spreading_rate)
         sr_range = sr_max - sr_min
-
-    if sr_range < 1e-6 or spreading_rate_bins == 1:
-        # Uniform spreading rate or disabled - only need one bin
-        spreading_rate_levels = np.array([np.mean(spreading_rate)])
-        spreading_rate_bins = 1
-    else:
-        spreading_rate_levels = np.linspace(sr_min, sr_max, spreading_rate_bins)
+        if sr_range < 1e-6 or spreading_rate_bins == 1:
+            spreading_rate_levels = np.array([np.mean(spreading_rate)])
+            spreading_rate_bins = 1
+        else:
+            spreading_rate_levels = np.linspace(sr_min, sr_max, spreading_rate_bins)
 
     # Bin sediment thickness
-    # Use global range if provided (for consistent binning across chunks)
-    if sediment_range is not None:
+    # Use pre-computed levels if provided (best for consistency across chunks)
+    if sediment_levels is not None:
+        # Use the provided levels directly
+        sediment_bins = len(sediment_levels)
+        sediment_min = sediment_levels[0]
+        sediment_max = sediment_levels[-1]
+        sediment_range_val = sediment_max - sediment_min
+    elif sediment_range is not None:
+        # Use global range if provided (for consistent binning across chunks)
         sediment_min, sediment_max = sediment_range
         sediment_range_val = sediment_max - sediment_min
+        if sediment_range_val < 1e-6:
+            # Uniform sediment - only need one bin
+            sediment_levels = np.array([sediment_min])
+            sediment_bins = 1
+        else:
+            sediment_levels = np.linspace(sediment_min, sediment_max, sediment_bins)
     else:
+        # Use local range (less consistent across chunks)
         sediment_min = np.min(sediment_thickness)
         sediment_max = np.max(sediment_thickness)
         sediment_range_val = sediment_max - sediment_min
-
-    if sediment_range_val < 1e-6:
-        # Uniform sediment - only need one bin
-        sediment_levels = np.array([sediment_min])
-        sediment_bins = 1
-    else:
-        sediment_levels = np.linspace(sediment_min, sediment_max, sediment_bins)
+        if sediment_range_val < 1e-6:
+            sediment_levels = np.array([sediment_min])
+            sediment_bins = 1
+        else:
+            sediment_levels = np.linspace(sediment_min, sediment_max, sediment_bins)
 
     # Pre-compute filters at discrete (azimuth, sediment, spreading_rate) combinations
     azimuth_angles = np.linspace(-np.pi, np.pi, azimuth_bins, endpoint=False)
@@ -912,10 +972,16 @@ def generate_bathymetry_spatial_filter(seafloor_age, sediment_thickness, params,
                 convolved = oaconvolve(random_field, filt, mode='same')
 
                 # Rescale to match target RMS height (H_mod)
-                # The filter is normalized to sum=1, so we need to rescale the output
-                current_std = np.std(convolved)
-                if current_std > 1e-10:  # Avoid division by zero
-                    convolved = convolved * (H_mod / current_std)
+                # The filter is normalized to sum=1, which makes the convolved output
+                # have RMS proportional to the RMS of the random field (~0.28 for uniform[0,1])
+                # We rescale by the theoretical factor rather than empirical std
+                # to ensure consistency across chunks regardless of their content
+                #
+                # For a normalized filter convolved with uniform[0,1] random field:
+                # Expected RMS ≈ 1/sqrt(12) ≈ 0.2887
+                # We want RMS = H_mod, so scale by H_mod / (1/sqrt(12))
+                theoretical_rms = 1.0 / np.sqrt(12.0)  # RMS of uniform[0,1] distribution
+                convolved = convolved * (H_mod / theoretical_rms)
 
                 convolved_results_for_sediment.append(convolved)
 
