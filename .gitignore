@@ -166,3 +166,4 @@ test_optimization_visual.ipynb
 *.cache
 method4_bathymetry.gpml
 method4_bathymetry.nc
+complete_bathymetry.nc
