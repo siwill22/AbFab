@@ -232,16 +232,53 @@ for chunk, coord in zip(results, coords):
 - **Solution**: Trilinear interpolation between bins
 - **Result**: 0% discontinuities, no blending needed
 
+### Phase 7: Complete Bathymetry & Diffusive Sediment Fix (January 2025)
+- **New feature**: Added `generate_complete_bathymetry()` combining subsidence + hills + sediment
+- **Problem discovered**: 1092m discontinuities at chunk boundaries with `sediment_mode='fill'`
+- **Root cause**: `gaussian_filter(..., mode='nearest')` in `apply_diffusive_sediment_infill()` applied per-chunk
+- **Solution**: Refactored workflow to apply diffusive infill GLOBALLY after chunk assembly
+- **Key insight**: ANY smoothing operation with edge-dependent modes MUST be global, not per-chunk
+- **Result**: Complete elimination of chunk boundary artifacts
+
 ## Common Pitfalls & Solutions
 
-### 1. "I see visible boundaries in my output"
-**Diagnosis**:
-- Check if boundaries align with chunk edges (100px apart) → padding issue
-- Check if boundaries are irregular/not aligned with chunks → bin transitions
+### 1. "I see visible boundaries/discontinuities at chunk edges"
+**⚠️ CRITICAL GOTCHA - January 2025**
 
-**Solution**:
-- If chunk boundaries: Increase padding (use ≥20 pixels)
-- If bin transitions: Already fixed with trilinear interpolation (January 2025)
+**Root Cause**: Smoothing operations with edge-dependent modes applied PER-CHUNK
+
+**The Problem**:
+When using `scipy.ndimage.gaussian_filter()` or similar smoothing with `mode='nearest'`, `mode='reflect'`, etc., each chunk gets different edge padding. This creates discontinuities when chunks are assembled.
+
+**Specific case identified**: `apply_diffusive_sediment_infill()` in [AbFab.py:244](AbFab.py#L244)
+```python
+smoothed_basement = gaussian_filter(smoothed_basement, sigma=mean_sigma, mode='nearest')
+```
+
+This caused **1092m discontinuities** at chunk boundaries when `sediment_mode='fill'` was used!
+
+**THE FIX**: Apply smoothing operations GLOBALLY after chunk assembly, not per-chunk.
+
+**Implementation** ([generate_complete_bathymetry.py:377-414](generate_complete_bathymetry.py#L377-L414)):
+```python
+# WRONG: Apply diffusive infill per chunk
+for chunk in chunks:
+    chunk_bathy = generate_complete_bathymetry(..., sediment_mode='fill')  # ❌
+
+# CORRECT: Simple drape per chunk, then global diffusive infill
+for chunk in chunks:
+    chunk_bathy = generate_complete_bathymetry(..., sediment_mode='drape')  # ✅
+
+# After assembly:
+if SEDIMENT_MODE == 'fill':
+    complete_grid = apply_diffusive_sediment_infill(complete_grid, ...)  # ✅
+```
+
+**General Rule**: ANY operation using `scipy.ndimage` with edge modes (`gaussian_filter`, `convolve`, etc.) MUST be applied globally after assembly, not per-chunk.
+
+**Other diagnoses**:
+- Check if boundaries align with chunk edges (100px apart) → smoothing/padding issue
+- Check if boundaries are irregular/not aligned with chunks → bin transitions (fixed with trilinear interpolation)
 
 ### 2. "Results look too smooth/rough"
 **Check**:
@@ -345,14 +382,25 @@ Goff, J. A., & Arbic, B. K. (2010). Global prediction of abyssal hill root-mean-
 
 **If starting a new Claude Code session**:
 1. Read this document first for complete context
-2. Check [tiling_test_updated.ipynb](tiling_test_updated.ipynb) for current usage patterns
-3. Run `tests/test_bin_interpolation.py` to verify smooth transitions work
-4. Remember: **No blending needed** - trilinear interpolation handles smoothness
+2. Check [generate_complete_bathymetry.py](generate_complete_bathymetry.py) for current workflow
+3. Remember: **No blending needed** - trilinear interpolation handles smoothness
+4. **CRITICAL**: Smoothing operations MUST be global, not per-chunk
 
-**Critical Understanding**:
-The visible boundaries problem was solved by **bin interpolation**, not blending. If someone asks about boundaries:
-- Don't suggest blending (it won't work - chunks don't overlap)
-- Point to trilinear interpolation in lines 716-784
-- Remind that padding handles edge effects, interpolation handles bin transitions
+**Critical Understanding - Chunk Boundary Issues**:
+There were TWO separate causes of chunk boundaries, both now solved:
 
-**Last Major Update**: January 2025 (bin interpolation implementation)
+1. **Bin transitions** (solved Phase 6):
+   - Cause: Nearest-neighbor bin lookup
+   - Fix: Trilinear interpolation [AbFab.py:716-784](AbFab.py#L716-L784)
+
+2. **Diffusive sediment infill** (solved Phase 7):
+   - Cause: `gaussian_filter(..., mode='nearest')` applied per-chunk
+   - Fix: Apply diffusive infill globally after assembly [generate_complete_bathymetry.py:377-414](generate_complete_bathymetry.py#L377-L414)
+
+**If someone reports chunk boundaries**:
+1. Check if using `sediment_mode='fill'` → ensure global application
+2. Check for ANY `scipy.ndimage` operations in chunk processing → move to post-assembly
+3. Verify trilinear interpolation is enabled (it's automatic with `optimize=True`)
+4. Don't suggest blending - it doesn't work and isn't needed
+
+**Last Major Update**: January 2025 (diffusive sediment fix, complete bathymetry workflow)
