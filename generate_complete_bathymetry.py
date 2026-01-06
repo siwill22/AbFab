@@ -24,13 +24,15 @@ import AbFab as af
 # ============================================================================
 
 # Region selection (longitude, latitude bounds)
-XMIN, XMAX = -30, 30
-YMIN, YMAX = -70, 10
+#XMIN, XMAX = -30, 30
+#YMIN, YMAX = -70, 10
 #XMIN, XMAX = 63, 74
 #YMIN, YMAX = -30, -23
+XMIN, XMAX = -180, 180
+YMIN, YMAX = -70, 70
 
 # Grid parameters
-SPACING = '1m'  # Grid spacing (e.g., '2m' = 2 arcmin)
+SPACING = '5m'  # Grid spacing (e.g., '2m' = 2 arcmin)
 
 # Fixed abyssal hill parameters (baseline for spreading rate scaling)
 PARAMS_BASE = {
@@ -55,8 +57,8 @@ NUM_CPUS = 6         # Number of parallel workers
 # Optimization settings
 USE_OPTIMIZATION = True   # Use filter bank (50x speedup)
 AZIMUTH_BINS = 36        # Azimuth discretization (18-72 typical)
-SEDIMENT_BINS = 8        # Sediment discretization (3-10 typical)
-SPREADING_RATE_BINS = 10  # Spreading rate discretization
+SEDIMENT_BINS = 10        # Sediment discretization (3-10 typical)
+SPREADING_RATE_BINS = 20  # Spreading rate discretization
 
 # Random seed for reproducibility
 RANDOM_SEED = 42
@@ -142,17 +144,47 @@ def main():
     sed_da = pygmt.grdsample('/Users/simon/GIT/pyBacktrack/pybacktrack/bundle_data/sediment_thickness/GlobSed.nc',
                              region='g', spacing=SPACING)
 
-    # Extend longitude range for continuity
-    age_da = af.extend_longitude_range(age_da).sel(lon=slice(-190, 190))
-    sed_da = af.extend_longitude_range(sed_da).sel(lon=slice(-190, 190))
-
     # Clean sediment data
     sed_da = sed_da.where(np.isfinite(sed_da), 1.)
     sed_da = sed_da.where(sed_da < 1000., 1000.)
 
-    # Select region
-    age_da = age_da.sel(lon=slice(XMIN, XMAX), lat=slice(YMIN, YMAX))
-    sed_da = sed_da.sel(lon=slice(XMIN, XMAX), lat=slice(YMIN, YMAX))
+    # Check if the requested region is global in longitude
+    is_global = af.is_global_longitude(age_da.lon.values)
+
+    # Calculate required margin for periodic boundary handling
+    lon_spacing_deg_initial = float(np.abs(age_da.lon.values[1] - age_da.lon.values[0]))
+    grid_spacing_km_equator = lon_spacing_deg_initial * 111.32
+    required_margin = af.calculate_required_longitude_margin(
+        PARAMS_BASE, grid_spacing_km_equator, CHUNKPAD
+    )
+
+    print(f"\nLongitude coverage: {'GLOBAL' if is_global else 'REGIONAL'}")
+    if is_global:
+        print(f"Periodic boundary handling: ENABLED")
+        print(f"  Required margin: {required_margin:.1f}° (based on λ_s={PARAMS_BASE['lambda_s']}km, pad={CHUNKPAD}px)")
+
+        # Extend longitude range for periodic boundary
+        age_da = af.extend_longitude_range(age_da)
+        sed_da = af.extend_longitude_range(sed_da)
+
+        # Select extended region with margins
+        margin_range = 180 + required_margin
+        age_da = age_da.sel(lon=slice(-margin_range, margin_range))
+        sed_da = sed_da.sel(lon=slice(-margin_range, margin_range))
+
+        # Store original extent for trimming later
+        original_lon_min, original_lon_max = XMIN, XMAX
+    else:
+        print(f"Periodic boundary handling: DISABLED (regional grid)")
+        # For regional grids, just select the requested region
+        age_da = age_da.sel(lon=slice(XMIN, XMAX), lat=slice(YMIN, YMAX))
+        sed_da = sed_da.sel(lon=slice(XMIN, XMAX), lat=slice(YMIN, YMAX))
+        original_lon_min, original_lon_max = None, None
+
+    # Select latitude range (same for both global and regional)
+    if is_global:
+        age_da = age_da.sel(lat=slice(YMIN, YMAX))
+        sed_da = sed_da.sel(lat=slice(YMIN, YMAX))
 
     print(f"Region: {XMIN}° to {XMAX}° E, {YMIN}° to {YMAX}° N")
     print(f"Grid shape: {age_da.shape}")
@@ -265,6 +297,35 @@ def main():
         complete_grid.loc[{'lat': lat_slice, 'lon': lon_slice}] = res.data
 
     # ========================================================================
+    # TRIM TO ORIGINAL EXTENT AND REMOVE DUPLICATES (for global grids)
+    # ========================================================================
+    if is_global and original_lon_min is not None:
+        print("\nTrimming to original longitude extent...")
+        print(f"  Extended range: {float(complete_grid.lon.min()):.1f}° to {float(complete_grid.lon.max()):.1f}°")
+
+        # Find unique longitude values and their indices
+        lon_vals = complete_grid.lon.values
+        _, unique_indices = np.unique(lon_vals, return_index=True)
+        unique_indices = np.sort(unique_indices)  # Keep original order
+
+        # Select only the first occurrence of each unique longitude value
+        complete_grid = complete_grid.isel(lon=unique_indices)
+
+        # Now trim to original extent, excluding +180° endpoint
+        lon_max_exclusive = original_lon_max - lon_spacing_deg / 2
+        complete_grid = complete_grid.sel(lon=slice(original_lon_min, lon_max_exclusive))
+
+        print(f"  Trimmed range: {float(complete_grid.lon.min()):.1f}° to {float(complete_grid.lon.max()):.1f}°")
+        print(f"  Unique longitudes: {len(np.unique(complete_grid.lon.values))} out of {len(complete_grid.lon.values)}")
+        print(f"  Note: Excluded +180° to avoid duplicate with -180° (same point on sphere)")
+
+    # ========================================================================
+    # ADD CF-COMPLIANT METADATA
+    # ========================================================================
+    print("\nAdding CF-compliant coordinate metadata...")
+    complete_grid = af.add_cf_compliant_coordinate_attrs(complete_grid)
+
+    # ========================================================================
     # SAVE TO NETCDF
     # ========================================================================
     print("\nSaving to NetCDF...")
@@ -283,17 +344,31 @@ def main():
     print("Generating component grids for visualization...")
     print("="*70)
 
-    # Calculate subsidence component
+    # For visualization, we need age and sediment grids that match complete_grid
+    # Reload and process with clean coordinates
+    print("  Reloading data for visualization...")
+    age_vis = pygmt.grdsample('/Users/simon/Data/AgeGrids/2020/age.2020.1.GeeK2007.6m.nc',
+                              region=[float(complete_grid.lon.min()), float(complete_grid.lon.max()),
+                                     float(complete_grid.lat.min()), float(complete_grid.lat.max())],
+                              spacing=SPACING)
+    sed_vis = pygmt.grdsample('/Users/simon/GIT/pyBacktrack/pybacktrack/bundle_data/sediment_thickness/GlobSed.nc',
+                              region=[float(complete_grid.lon.min()), float(complete_grid.lon.max()),
+                                     float(complete_grid.lat.min()), float(complete_grid.lat.max())],
+                              spacing=SPACING)
+    sed_vis = sed_vis.where(np.isfinite(sed_vis), 1.)
+    sed_vis = sed_vis.where(sed_vis < 1000., 1000.)
+
+    # Calculate subsidence component (now matching trimmed dimensions)
     print("  Calculating thermal subsidence...")
-    subsidence_grid = af.calculate_thermal_subsidence(age_da.data, model=SUBSIDENCE_MODEL)
+    subsidence_grid = af.calculate_thermal_subsidence(age_vis.data, model=SUBSIDENCE_MODEL)
 
     # Extract a representative profile for detailed analysis
-    profile_idx = full_ny // 2
+    profile_idx = len(complete_grid.lat) // 2
     lon_profile = complete_grid.lon.values
     complete_profile = complete_grid.data[profile_idx, :]
     subsidence_profile = subsidence_grid[profile_idx, :]
-    age_profile = age_da.data[profile_idx, :]
-    sediment_profile = sed_da.data[profile_idx, :]
+    age_profile = age_vis.data[profile_idx, :]
+    sediment_profile = sed_vis.data[profile_idx, :]
 
     # ========================================================================
     # VISUALIZATION
@@ -332,7 +407,7 @@ def main():
     ax3 = fig.add_subplot(gs[1, 1])
     hills_component = complete_grid.data - subsidence_grid
     if SEDIMENT_MODE == 'drape':
-        hills_component = hills_component - sed_da.data
+        hills_component = hills_component - sed_vis.data
     elif SEDIMENT_MODE == 'fill':
         # For 'fill' mode, sediment is already incorporated in the bathymetry
         # The residual shows the combined effect of hills + sediment redistribution
@@ -405,8 +480,8 @@ def main():
 
     if SEDIMENT_MODE != 'none':
         print(f"\nSediment ({SEDIMENT_MODE} mode):")
-        print(f"  Mean thickness: {np.nanmean(sed_da.data):.0f} m")
-        print(f"  Max thickness: {np.nanmax(sed_da.data):.0f} m")
+        print(f"  Mean thickness: {np.nanmean(sed_vis.data):.0f} m")
+        print(f"  Max thickness: {np.nanmax(sed_vis.data):.0f} m")
         if SEDIMENT_MODE == 'fill':
             print(f"  Diffusion coefficient: {SEDIMENT_DIFFUSION}")
 
