@@ -1335,12 +1335,12 @@ def generate_complete_bathymetry(seafloor_age, sediment_thickness, params, grid_
 def extend_longitude_range(da):
     """
     Extend a DataArray's longitude range from -180:180 to -190:190
-    
+
     Parameters:
     -----------
     da : xarray.DataArray
         Input DataArray with longitude coordinates from -180 to 180
-    
+
     Returns:
     --------
     xarray.DataArray
@@ -1348,30 +1348,150 @@ def extend_longitude_range(da):
     """
     # Identify the longitude dimension
     lon_dim = [dim for dim in da.dims if 'lon' in dim.lower()][0]
-    
+
     # Get original longitude coordinates
     original_lons = da[lon_dim].values
-    
+
     # Create new longitude coordinates
     new_lons = np.concatenate([
         original_lons - 360,  # Add negative extension
         original_lons,         # Keep original data
         original_lons + 360    # Add positive extension
     ])
-    
+
     # Create new data array with extended longitude
     extended_data = np.concatenate([
         da.sel({lon_dim: slice(original_lons.min(), original_lons.max())}),
         da,
         da.sel({lon_dim: slice(original_lons.min(), original_lons.max())})
     ], axis=da.dims.index(lon_dim))
-    
+
     # Create new DataArray
     extended_da = xr.DataArray(
-        extended_data, 
+        extended_data,
         coords={**da.coords, lon_dim: new_lons},
         dims=da.dims,
         attrs=da.attrs
     )
-    
+
     return extended_da
+
+
+def add_cf_compliant_coordinate_attrs(data_array):
+    """
+    Add CF-compliant metadata to coordinate variables for proper NetCDF export.
+
+    This ensures that programs like Panoply, QGIS, and other GIS tools can
+    correctly interpret the coordinate system.
+
+    Parameters:
+    -----------
+    data_array : xarray.DataArray
+        Input DataArray to add coordinate attributes to
+
+    Returns:
+    --------
+    xarray.DataArray
+        DataArray with CF-compliant coordinate attributes
+
+    Notes:
+    ------
+    Follows CF Conventions 1.8 for coordinate variables:
+    - http://cfconventions.org/Data/cf-conventions/cf-conventions-1.8/cf-conventions.html
+    """
+    # Make a copy to avoid modifying the input
+    da = data_array.copy()
+
+    # Add longitude attributes if longitude coordinate exists
+    lon_names = [dim for dim in da.dims if 'lon' in dim.lower()]
+    if lon_names:
+        lon_dim = lon_names[0]
+        da[lon_dim].attrs.update({
+            'units': 'degrees_east',
+            'standard_name': 'longitude',
+            'long_name': 'longitude',
+            'axis': 'X',
+            'actual_range': [float(da[lon_dim].min()), float(da[lon_dim].max())]
+        })
+
+    # Add latitude attributes if latitude coordinate exists
+    lat_names = [dim for dim in da.dims if 'lat' in dim.lower()]
+    if lat_names:
+        lat_dim = lat_names[0]
+        da[lat_dim].attrs.update({
+            'units': 'degrees_north',
+            'standard_name': 'latitude',
+            'long_name': 'latitude',
+            'axis': 'Y',
+            'actual_range': [float(da[lat_dim].min()), float(da[lat_dim].max())]
+        })
+
+    return da
+
+
+def calculate_required_longitude_margin(params, grid_spacing_km, chunkpad_pixels=20):
+    """
+    Calculate the required longitude margin for periodic boundary handling.
+
+    The margin must be large enough to accommodate:
+    1. The filter size (based on maximum wavelength)
+    2. The chunk padding
+
+    Parameters:
+    -----------
+    params : dict
+        Abyssal hill parameters containing 'lambda_s' (parallel wavelength in km)
+    grid_spacing_km : float
+        Grid spacing in km at the equator
+    chunkpad_pixels : int, optional
+        Number of padding pixels used in chunking (default: 20)
+
+    Returns:
+    --------
+    float
+        Required margin in degrees
+
+    Notes:
+    ------
+    The filter extends approximately 3*lambda_s on each side (99% of Gaussian)
+    """
+    # Maximum wavelength (parallel direction, usually largest)
+    max_wavelength_km = params.get('lambda_s', 30.0)
+
+    # Filter extends ~3 standard deviations (99% of Gaussian energy)
+    # For Gaussian: sigma ≈ wavelength/2.355, so 3*sigma ≈ 1.27*wavelength
+    filter_extent_km = 3.0 * max_wavelength_km
+
+    # Add chunk padding
+    padding_km = chunkpad_pixels * grid_spacing_km
+
+    # Total margin needed in km
+    total_margin_km = filter_extent_km + padding_km
+
+    # Convert to degrees at equator (111.32 km/degree)
+    margin_deg = total_margin_km / 111.32
+
+    # Round up to nearest degree for safety
+    margin_deg = np.ceil(margin_deg)
+
+    return margin_deg
+
+
+def is_global_longitude(lon_coords, tolerance_deg=1.0):
+    """
+    Check if longitude coordinates span the full globe.
+
+    Parameters:
+    -----------
+    lon_coords : array-like
+        Longitude coordinates
+    tolerance_deg : float, optional
+        Tolerance for detecting global coverage (default: 1.0°)
+
+    Returns:
+    --------
+    bool
+        True if longitude range covers ~360°, False otherwise
+    """
+    lon_range = np.max(lon_coords) - np.min(lon_coords)
+    return lon_range >= (360.0 - tolerance_deg)
