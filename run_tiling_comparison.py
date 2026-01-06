@@ -24,11 +24,13 @@ import AbFab as af
 # ============================================================================
 
 # Region selection (longitude, latitude bounds)
-XMIN, XMAX = 63, 74
-YMIN, YMAX = -30, -23
+#XMIN, XMAX = 63, 74
+#YMIN, YMAX = -30, -23
+XMIN, XMAX = 0, 50  # Southern Africa test region
+YMIN, YMAX = -40, -20
 
 # Grid parameters
-SPACING = '0.5m'  # Grid spacing (e.g., '2m' = 2 arcmin)
+SPACING = '5m'  # Grid spacing (e.g., '2m' = 2 arcmin)
 
 # Fixed abyssal hill parameters (baseline)
 PARAMS_FIXED = {

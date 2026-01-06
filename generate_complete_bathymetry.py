@@ -30,9 +30,11 @@ import AbFab as af
 #YMIN, YMAX = -30, -23
 XMIN, XMAX = -180, 180
 YMIN, YMAX = -70, 70
+#XMIN, XMAX = 0, 50  # Southern Africa test region
+#YMIN, YMAX = -40, -20
 
 # Grid parameters
-SPACING = '5m'  # Grid spacing (e.g., '2m' = 2 arcmin)
+SPACING = '5m'  # Grid spacing (e.g., '2m' = 2 arcmin, '5m' = 5 arcmin for testing)
 
 # Fixed abyssal hill parameters (baseline for spreading rate scaling)
 PARAMS_BASE = {
@@ -75,7 +77,10 @@ DPI = 300
 def process_complete_bathymetry_chunk(coord, age_dataarray, sed_dataarray, rand_dataarray,
                                        chunksize, chunkpad, params, lon_spacing_deg,
                                        subsidence_model, sediment_mode, sediment_diffusion,
-                                       sediment_range=None, spreading_rate_range=None):
+                                       sediment_range=None, spreading_rate_range=None,
+                                       sediment_levels=None, spreading_rate_levels=None,
+                                       spreading_rate_fill_value=None,
+                                       azimuth_dataarray=None, spreading_rate_dataarray=None):
     """
     Process a single chunk of complete bathymetry.
 
@@ -89,6 +94,16 @@ def process_complete_bathymetry_chunk(coord, age_dataarray, sed_dataarray, rand_
     chunk_random = rand_dataarray[coord[0]:coord[0]+chunksize+chunkpad,
                                    coord[1]:coord[1]+chunksize+chunkpad]
 
+    # Extract azimuth and spreading rate chunks if provided (for consistency)
+    chunk_azimuth = None
+    chunk_spreading_rate = None
+    if azimuth_dataarray is not None:
+        chunk_azimuth = azimuth_dataarray[coord[0]:coord[0]+chunksize+chunkpad,
+                                          coord[1]:coord[1]+chunksize+chunkpad]
+    if spreading_rate_dataarray is not None:
+        chunk_spreading_rate = spreading_rate_dataarray[coord[0]:coord[0]+chunksize+chunkpad,
+                                                        coord[1]:coord[1]+chunksize+chunkpad]
+
     # Skip empty chunks
     if np.all(np.isnan(chunk_age.data)):
         return chunk_age
@@ -98,15 +113,16 @@ def process_complete_bathymetry_chunk(coord, age_dataarray, sed_dataarray, rand_
     mean_lat = float(np.mean(chunk_lat_coords))
     grid_spacing_km = lon_spacing_deg * 111.32 * np.cos(np.radians(mean_lat))
 
-    # Generate complete bathymetry (subsidence + hills + sediment)
-    complete_bathy = af.generate_complete_bathymetry(
+    # Generate basement bathymetry ONLY (subsidence + hills + simple sediment drape)
+    # DO NOT apply diffusive infill here - it will be done globally after assembly
+    basement_bathy = af.generate_complete_bathymetry(
         chunk_age.data,
         chunk_sed.data,
         params,
         grid_spacing_km,
         random_field=chunk_random.data,
         subsidence_model=subsidence_model,
-        sediment_mode=sediment_mode,
+        sediment_mode='drape',  # Use simple drape per chunk, diffusion applied globally later
         sediment_diffusion=sediment_diffusion,
         filter_type='gaussian',
         optimize=USE_OPTIMIZATION,
@@ -116,16 +132,28 @@ def process_complete_bathymetry_chunk(coord, age_dataarray, sed_dataarray, rand_
         base_params=params,
         sediment_range=sediment_range,
         spreading_rate_range=spreading_rate_range,
-        lat_coords=chunk_lat_coords
+        sediment_levels=sediment_levels,
+        spreading_rate_levels=spreading_rate_levels,
+        spreading_rate_fill_value=spreading_rate_fill_value,
+        lat_coords=chunk_lat_coords,
+        azimuth_field=chunk_azimuth.data if chunk_azimuth is not None else None,
+        spreading_rate_field=chunk_spreading_rate.data if chunk_spreading_rate is not None else None
     )
 
     # Trim padding and return
     pad_half = chunkpad // 2
+    trimmed_bathy = basement_bathy[pad_half:-pad_half, pad_half:-pad_half]
+
+    # Get trimmed coordinates
+    trimmed_lat = chunk_age.lat.values[pad_half:-pad_half]
+    trimmed_lon = chunk_age.lon.values[pad_half:-pad_half]
+
     return xr.DataArray(
-        complete_bathy,
-        coords=chunk_age.coords,
+        trimmed_bathy,
+        coords={'lat': trimmed_lat, 'lon': trimmed_lon},
+        dims=['lat', 'lon'],
         name='bathymetry'
-    )[pad_half:-pad_half, pad_half:-pad_half]
+    )
 
 
 # ============================================================================
@@ -221,13 +249,25 @@ def main():
     if SEDIMENT_MODE == 'fill':
         print(f"  • Sediment diffusion: {SEDIMENT_DIFFUSION}")
 
-    # Calculate global ranges for consistent binning
-    print("\nCalculating global bin ranges...")
+    # Calculate global azimuth and spreading rate for perfect consistency across chunks
+    print("\nCalculating global azimuth and spreading rate fields...")
+
+    # Calculate azimuth globally (ensures gradient is computed from full context)
+    azimuth_global = af.calculate_azimuth_from_age(
+        age_da.data, lat_coords=age_da.lat.values
+    )
+    print(f"  Azimuth field calculated: shape {azimuth_global.shape}")
+
+    # Calculate spreading rate globally (ensures gradient is computed from full context)
     spreading_rate_global = af.calculate_spreading_rate_from_age(
         age_da.data, grid_spacing_km, lat_coords=age_da.lat.values
     )
+
+    # Compute global median BEFORE filling NaNs (for consistent NaN filling across chunks)
+    sr_median_global = float(np.nanmedian(spreading_rate_global))
+
     spreading_rate_global = np.where(np.isnan(spreading_rate_global),
-                                      np.nanmedian(spreading_rate_global),
+                                      sr_median_global,
                                       spreading_rate_global)
     sr_min_global = float(np.nanmin(spreading_rate_global))
     sr_max_global = float(np.nanmax(spreading_rate_global))
@@ -236,7 +276,40 @@ def main():
     sed_max_global = float(np.nanmax(sed_da.data))
 
     print(f"  Global spreading rate range: {sr_min_global:.1f} - {sr_max_global:.1f} mm/yr")
+    print(f"  Global spreading rate median (for NaN fill): {sr_median_global:.1f} mm/yr")
     print(f"  Global sediment range: {sed_min_global:.1f} - {sed_max_global:.1f} m")
+
+    # Compute bin levels ONCE globally to ensure consistency across all chunks
+    print("\nComputing global bin levels for consistency...")
+    sr_range = sr_max_global - sr_min_global
+    if sr_range < 1e-6 or SPREADING_RATE_BINS == 1:
+        spreading_rate_levels_global = np.array([np.mean([sr_min_global, sr_max_global])])
+    else:
+        spreading_rate_levels_global = np.linspace(sr_min_global, sr_max_global, SPREADING_RATE_BINS)
+
+    sed_range = sed_max_global - sed_min_global
+    if sed_range < 1e-6:
+        sediment_levels_global = np.array([sed_min_global])
+    else:
+        sediment_levels_global = np.linspace(sed_min_global, sed_max_global, SEDIMENT_BINS)
+
+    print(f"  Spreading rate bin levels (n={len(spreading_rate_levels_global)}): {spreading_rate_levels_global[:3]}...")
+    print(f"  Sediment bin levels (n={len(sediment_levels_global)}): {sediment_levels_global[:3]}...")
+
+    # Create DataArrays for azimuth and spreading rate (for consistent chunking)
+    print("\nCreating DataArrays for global azimuth and spreading rate fields...")
+    azimuth_da = xr.DataArray(
+        azimuth_global,
+        coords={'lat': age_da.lat, 'lon': age_da.lon},
+        dims=['lat', 'lon'],
+        name='azimuth'
+    )
+    spreading_rate_da = xr.DataArray(
+        spreading_rate_global,
+        coords={'lat': age_da.lat, 'lon': age_da.lon},
+        dims=['lat', 'lon'],
+        name='spreading_rate'
+    )
 
     # Process all chunks in parallel
     print("\n" + "="*70)
@@ -248,7 +321,12 @@ def main():
         coord, age_da, sed_da, rand_da, CHUNKSIZE, chunkpad, PARAMS_BASE, lon_spacing_deg,
         SUBSIDENCE_MODEL, SEDIMENT_MODE, SEDIMENT_DIFFUSION,
         sediment_range=(sed_min_global, sed_max_global),
-        spreading_rate_range=(sr_min_global, sr_max_global)
+        spreading_rate_range=(sr_min_global, sr_max_global),
+        sediment_levels=sediment_levels_global,
+        spreading_rate_levels=spreading_rate_levels_global,
+        spreading_rate_fill_value=sr_median_global,
+        azimuth_dataarray=azimuth_da,
+        spreading_rate_dataarray=spreading_rate_da
     ) for coord in coords)
 
     elapsed = time.time() - start_time
@@ -295,6 +373,51 @@ def main():
         lat_slice = slice(res.lat.values[0], res.lat.values[-1])
         lon_slice = slice(res.lon.values[0], res.lon.values[-1])
         complete_grid.loc[{'lat': lat_slice, 'lon': lon_slice}] = res.data
+
+    # ========================================================================
+    # APPLY DIFFUSIVE SEDIMENT INFILL (if requested)
+    # This MUST be done globally AFTER assembly to avoid chunk discontinuities!
+    # ========================================================================
+    if SEDIMENT_MODE == 'fill':
+        print("\n" + "="*70)
+        print("Applying global diffusive sediment infill...")
+        print("="*70)
+        print(f"  Diffusion coefficient: {SEDIMENT_DIFFUSION}")
+
+        # Calculate grid spacing at mean latitude
+        mean_lat_global = float(complete_grid.lat.mean())
+        grid_spacing_global = lon_spacing_deg * 111.32 * np.cos(np.radians(mean_lat_global))
+        print(f"  Grid spacing (at {mean_lat_global:.1f}°N): {grid_spacing_global:.2f} km")
+
+        # Get sediment thickness data matching complete_grid extent
+        # Use simple nearest neighbor interpolation to avoid coordinate issues
+        sed_trimmed_data = np.zeros_like(complete_grid.data)
+        for i, lat in enumerate(complete_grid.lat.values):
+            for j, lon in enumerate(complete_grid.lon.values):
+                lat_idx = np.argmin(np.abs(sed_da.lat.values - lat))
+                lon_idx = np.argmin(np.abs(sed_da.lon.values - lon))
+                sed_trimmed_data[i, j] = sed_da.data[lat_idx, lon_idx]
+
+        # Apply diffusive infill to the complete grid
+        # Note: complete_grid currently has subsidence + hills + simple drape
+        # We need to subtract the drape, apply diffusion, then it adds back
+        # Actually, the diffusive infill function expects basement (without sediment drape)
+        # But we already added drape in chunks. So we need to:
+        # 1. Subtract sediment (to get basement + hills)
+        # 2. Apply diffusive infill
+
+        basement_grid = complete_grid.data - sed_trimmed_data  # Remove the drape
+
+        print(f"  Applying diffusive infill to {complete_grid.shape} grid...")
+        final_grid = af.apply_diffusive_sediment_infill(
+            basement_grid,
+            sed_trimmed_data,
+            grid_spacing_global,
+            SEDIMENT_DIFFUSION
+        )
+
+        complete_grid.data[:] = final_grid
+        print(f"  ✓ Diffusive infill applied globally")
 
     # ========================================================================
     # TRIM TO ORIGINAL EXTENT AND REMOVE DUPLICATES (for global grids)
