@@ -18,6 +18,7 @@ import xarray as xr
 import time
 import pygmt
 import AbFab as af
+from tqdm import tqdm
 
 # ============================================================================
 # USER PARAMETERS - Modify these as needed
@@ -25,7 +26,7 @@ import AbFab as af
 
 # Region selection (longitude, latitude bounds)
 #XMIN, XMAX = -30, 30
-#YMIN, YMAX = -70, 10
+#YMIN, YMAX = -60, -20
 #XMIN, XMAX = 63, 74
 #YMIN, YMAX = -30, -23
 XMIN, XMAX = -180, 180
@@ -34,7 +35,7 @@ YMIN, YMAX = -70, 70
 #YMIN, YMAX = -40, -20
 
 # Grid parameters
-SPACING = '5m'  # Grid spacing (e.g., '2m' = 2 arcmin, '5m' = 5 arcmin for testing)
+SPACING = '2m'  # Grid spacing (e.g., '2m' = 2 arcmin, '5m' = 5 arcmin for testing)
 
 # Fixed abyssal hill parameters (baseline for spreading rate scaling)
 PARAMS_BASE = {
@@ -48,13 +49,13 @@ PARAMS_BASE = {
 SUBSIDENCE_MODEL = 'GDH1'  # Options: 'GDH1', 'half_space', 'plate'
 
 # Sediment treatment
-SEDIMENT_MODE = 'fill'  # Options: 'none', 'drape', 'fill'
+SEDIMENT_MODE = 'none'  # Options: 'none', 'drape', 'fill'
 SEDIMENT_DIFFUSION = 0.3  # Diffusion coefficient for 'fill' mode (0-1, higher = more ponding)
 
 # Chunking parameters for parallel processing
 CHUNKSIZE = 100      # Chunk size in pixels
 CHUNKPAD = 20        # Padding to avoid edge effects
-NUM_CPUS = 6         # Number of parallel workers
+NUM_CPUS = 8         # Number of parallel workers
 
 # Optimization settings
 USE_OPTIMIZATION = True   # Use filter bank (50x speedup)
@@ -327,7 +328,7 @@ def main():
         spreading_rate_fill_value=sr_median_global,
         azimuth_dataarray=azimuth_da,
         spreading_rate_dataarray=spreading_rate_da
-    ) for coord in coords)
+    ) for coord in tqdm(coords, desc="Processing chunks", unit="chunk"))
 
     elapsed = time.time() - start_time
 
@@ -391,8 +392,9 @@ def main():
 
         # Get sediment thickness data matching complete_grid extent
         # Use simple nearest neighbor interpolation to avoid coordinate issues
+        print("  Resampling sediment data to match complete grid...")
         sed_trimmed_data = np.zeros_like(complete_grid.data)
-        for i, lat in enumerate(complete_grid.lat.values):
+        for i, lat in enumerate(tqdm(complete_grid.lat.values, desc="  Resampling sediment", unit="row")):
             for j, lon in enumerate(complete_grid.lon.values):
                 lat_idx = np.argmin(np.abs(sed_da.lat.values - lat))
                 lon_idx = np.argmin(np.abs(sed_da.lon.values - lon))
