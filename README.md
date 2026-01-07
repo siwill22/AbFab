@@ -5,6 +5,27 @@ Code to generate maps of synthetic abyssal hill fabric for ocean basins followin
 
 ## Quick Start
 
+### Command Line (Recommended)
+
+The easiest way to generate complete bathymetry is using the command-line interface with YAML configuration:
+
+```bash
+# Use default configuration (global grid, 5m resolution)
+python generate_complete_bathymetry.py
+
+# Use custom configuration
+python generate_complete_bathymetry.py config_test.yaml
+
+# Quick regional test (completes in ~1-2 minutes)
+python generate_complete_bathymetry.py config_test.yaml
+```
+
+See [Configuration Files](#configuration-files) section below for details.
+
+### Python API (Advanced)
+
+For direct Python API usage:
+
 ```python
 import numpy as np
 import AbFab as af
@@ -110,14 +131,134 @@ bathymetry = af.generate_bathymetry_spatial_filter(
 )
 ```
 
+## Configuration Files
+
+AbFab uses YAML configuration files for easy parameter management. This approach allows you to:
+- Keep your parameters organized and version-controlled
+- Easily switch between different configurations
+- Override only the parameters you need (others use defaults)
+- Share configurations with collaborators
+
+### Basic Usage
+
+```bash
+# Use default configuration
+python generate_complete_bathymetry.py
+
+# Use custom configuration
+python generate_complete_bathymetry.py my_config.yaml
+```
+
+### Configuration Structure
+
+See [config_default.yaml](config_default.yaml) for the complete configuration template. Key sections:
+
+```yaml
+# Input data files
+input:
+  age_file: '/path/to/age_grid.nc'
+  sediment_file: '/path/to/sediment.nc'  # or null to disable
+  constant_sediment: null  # or a value in meters for uniform sediment
+
+# Region selection
+region:
+  lon_min: -180
+  lon_max: 180
+  lat_min: -70
+  lat_max: 70
+  spacing: '5m'  # '1m', '2m', '5m', '10m', etc.
+
+# Abyssal hill parameters
+abyssal_hills:
+  H: 250.0          # RMS height (m)
+  lambda_n: 3.0     # Perpendicular wavelength (km)
+  lambda_s: 30.0    # Parallel wavelength (km)
+  D: 2.2            # Fractal dimension
+
+# Sediment treatment
+sediment:
+  mode: 'fill'      # 'none', 'drape', or 'fill'
+  diffusion: 0.3    # For 'fill' mode (0-1)
+
+# Optimization and parallel processing
+optimization:
+  enabled: true
+  azimuth_bins: 36
+  sediment_bins: 10
+  spreading_rate_bins: 20
+
+parallel:
+  num_cpus: 8
+  chunk_size: 100
+```
+
+### Example Configurations
+
+#### Quick Test (No Sediment)
+```yaml
+# config_no_sediment.yaml
+input:
+  sediment_file: null
+
+region:
+  lon_min: 0
+  lon_max: 50
+  lat_min: -40
+  lat_max: -20
+  spacing: '5m'
+
+sediment:
+  mode: 'none'
+
+output:
+  netcdf: 'no_sediment_bathymetry.nc'
+```
+
+#### Regional Study with Uniform Sediment
+```yaml
+# config_uniform_sediment.yaml
+input:
+  constant_sediment: 100.0  # 100m everywhere
+
+region:
+  lon_min: 0
+  lon_max: 50
+  lat_min: -40
+  lat_max: -20
+
+sediment:
+  mode: 'drape'
+```
+
+### Making Sediment Optional
+
+To run without sediment:
+
+**Option 1**: Set `sediment_file: null` in config
+**Option 2**: Use `sediment_mode: 'none'`
+**Option 3**: Both (recommended for clarity)
+
+```yaml
+input:
+  sediment_file: null  # No sediment data
+
+sediment:
+  mode: 'none'  # Skip sediment processing
+```
+
+This generates bathymetry with only thermal subsidence and abyssal hills.
+
 ## Installation
 
 ```bash
 # Core dependencies
-pip install numpy scipy xarray
+pip install numpy scipy xarray pyyaml
 
-# For notebooks
-pip install jupyter matplotlib pygmt joblib
+# For complete bathymetry workflow
+pip install pygmt joblib tqdm
+
+# For notebooks and visualization
+pip install jupyter matplotlib
 ```
 
 ## Examples
