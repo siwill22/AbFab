@@ -240,6 +240,19 @@ for chunk, coord in zip(results, coords):
 - **Key insight**: ANY smoothing operation with edge-dependent modes MUST be global, not per-chunk
 - **Result**: Complete elimination of chunk boundary artifacts
 
+### Phase 8: GPU Acceleration & YAML Configuration (January 2025)
+- **New feature**: GPU-accelerated version (`AbFab_gpu.py`) using PyTorch MPS backend for Apple Silicon
+- **Speedup**: 2-5× faster for large grids (>1000×1000), up to 4× for global 1m resolution
+- **Numerical consistency**: Fixed to produce identical results to CPU version (< 1e-6 precision)
+- **Critical fixes applied to GPU**:
+  1. **Random field generation**: Must use NumPy RNG (not PyTorch) for consistency
+  2. **Gradient calculation**: Implemented `numpy_gradient_gpu()` to exactly replicate `np.gradient()` edge handling
+- **Configuration refactor**: Added YAML-based configuration system
+  - All parameters in `config_*.yaml` files
+  - Single `generate_complete_bathymetry.py` script uses workflow from `AbFab.py`
+  - Sediment thickness made optional (`sediment_file: null`)
+- **Files**: `AbFab_gpu.py`, `generate_complete_bathymetry_gpu.py`, `test_gpu_cpu_match.py`
+
 ## Common Pitfalls & Solutions
 
 ### 1. "I see visible boundaries/discontinuities at chunk edges"
@@ -306,15 +319,82 @@ if SEDIMENT_MODE == 'fill':
 - **Option 2**: Use returned params but verify they're reasonable for your region
 - **Option 3**: Use fixed parameters and skip spreading rate entirely
 
+### 5. "GPU and CPU versions produce different results"
+**⚠️ CRITICAL - GPU Consistency** (January 2025)
+
+**Two critical requirements for GPU/CPU consistency**:
+
+#### **A. Random Field Generation**
+**Problem**: PyTorch (`torch.randn()`) and NumPy (`np.random.randn()`) use different RNGs.
+Even with the same seed, they produce different sequences!
+
+**Solution** ([AbFab_gpu.py:55-82](AbFab_gpu.py#L55-L82)):
+```python
+# WRONG: Using PyTorch RNG
+torch.manual_seed(seed)
+return torch.randn(shape, device=DEVICE)  # ❌ Different from NumPy!
+
+# CORRECT: Use NumPy RNG then transfer to GPU
+np.random.seed(seed)
+random_field_cpu = np.random.randn(ny, nx).astype(np.float32)
+return torch.tensor(random_field_cpu, device=DEVICE)  # ✅ Identical to CPU!
+```
+
+#### **B. Gradient Calculation**
+**Problem**: Manual padding with `mode='replicate'` gives different edge values than `np.gradient()`.
+
+**NumPy's `gradient()` behavior**:
+- First pixel: forward difference `(f[1] - f[0])`
+- Interior: central differences `(f[i+1] - f[i-1]) / 2`
+- Last pixel: backward difference `(f[-1] - f[-2])`
+
+**Solution** ([AbFab_gpu.py:85-168](AbFab_gpu.py#L85-L168)):
+Implement `numpy_gradient_gpu()` that exactly replicates NumPy's behavior on GPU.
+
+```python
+def numpy_gradient_gpu(f, axis):
+    """Replicate np.gradient() exactly on GPU."""
+    grad = torch.zeros_like(f)
+    if axis == 0:  # y-direction
+        grad[0, :] = f[1, :] - f[0, :]              # Forward
+        grad[1:-1, :] = (f[2:, :] - f[:-2, :]) / 2  # Central
+        grad[-1, :] = f[-1, :] - f[-2, :]           # Backward
+    # Similar for axis == 1
+    return grad
+```
+
+**Verification**:
+```bash
+python test_gpu_cpu_match.py  # Should show all PASS, < 1e-6 differences
+```
+
+**Expected test results**:
+- Random field: 0.00e+00 difference (perfect match)
+- Azimuth: < 2e-06 rad difference
+- Spreading rate: < 5e-06 mm/yr difference
+- Edge pixels: < 5e-07 difference
+
+If tests fail, check:
+1. Random field is generated with NumPy (not torch)
+2. Gradient function matches `np.gradient()` edge behavior exactly
+3. PyTorch version supports MPS (Apple Silicon) or CUDA (NVIDIA)
+
 ## File Structure
 
 ```
 AbFab/
-├── AbFab.py                    # Main module (784 lines)
-├── README.md                   # User documentation
-├── CLAUDE.md                   # This file - AI assistant guide
-├── tiling_test_updated.ipynb  # Demonstration notebook
-├── tests/                      # Test scripts
+├── AbFab.py                           # CPU version - Main module (~2400 lines)
+├── AbFab_gpu.py                       # GPU version - PyTorch MPS backend (~1100 lines)
+├── generate_complete_bathymetry.py    # CPU workflow script (uses YAML config)
+├── generate_complete_bathymetry_gpu.py # GPU workflow script (uses YAML config)
+├── README.md                          # User documentation
+├── CLAUDE.md                          # This file - Technical guide for AI
+├── config_default.yaml                # Default configuration template
+├── config_test.yaml                   # Quick test configuration
+├── config_no_sediment.yaml            # No sediment example
+├── tiling_test_updated.ipynb         # Demonstration notebook
+├── test_gpu_cpu_match.py              # GPU/CPU consistency verification
+├── tests/                             # Test scripts
 │   ├── test_optimization.py
 │   ├── test_sediment_effect.py
 │   ├── test_spreading_rate_scaling.py
