@@ -173,3 +173,5 @@ bathymetry_gpu.nc
 no_sediment_bathymetry.nc
 no_sediment_bathymetry_gpu.nc
 test_bathymetry.nc
+*.xml
+complete_bathymetry_gpu.nc
