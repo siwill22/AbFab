@@ -1,0 +1,58 @@
+# AbFab GPU Configuration
+# For use with generate_complete_bathymetry_gpu.py
+
+# Input data files
+input:
+  age_file: '/Users/simon/Data/AgeGrids/2020/age.2020.1.GeeK2007.6m.nc'
+  sediment_file: '/Users/simon/GIT/pyBacktrack/pybacktrack/bundle_data/sediment_thickness/GlobSed.nc'
+  # constant_sediment: 100.0  # Alternative: use uniform sediment thickness (m)
+
+# Region selection
+region:
+  lon_min: 0
+  lon_max: 50
+  lat_min: -40
+  lat_max: -20
+  spacing: '5m'  # Arc-minutes: '1m', '2m', '5m', '10m'
+
+# Abyssal hill parameters (physical units)
+abyssal_hills:
+  H: 250.0          # RMS height (m) - base value, scaled by spreading rate
+  lambda_n: 3.0     # Perpendicular wavelength (km) - controls hill width
+  lambda_s: 30.0    # Parallel wavelength (km) - controls ridge narrowness
+  D: 2.2            # Fractal dimension (2.0-2.3)
+  filter_type: 'gaussian'  # 'gaussian' or 'von_karman'
+
+# Thermal subsidence model
+subsidence:
+  model: 'GDH1'  # 'GDH1', 'half_space', or 'plate'
+
+# Sediment treatment
+sediment:
+  mode: 'drape'     # 'none', 'drape', or 'fill'
+  diffusion: 0.3    # For 'fill' mode (0-1): higher = more ponding
+
+# Filter bank optimization
+optimization:
+  enabled: true     # Always true for GPU
+  azimuth_bins: 36  # Azimuth discretization (18-72)
+  sediment_bins: 10 # Sediment discretization (5-20)
+  spreading_rate_bins: 20  # Spreading rate bins (10-40)
+
+# GPU-specific settings
+gpu:
+  tile_size: 500    # Internal tile size for memory management
+                    # Reduce if OOM errors (try 300, 200, or 100)
+                    # Larger = faster but more memory
+
+# Output files
+output:
+  netcdf: 'bathymetry_gpu.nc'
+  figure: 'bathymetry_gpu.png'
+  dpi: 300
+  verbose: true
+
+# Advanced settings
+advanced:
+  random_seed: 42   # For reproducibility (null for random)
+  timeout: 600      # Not used in GPU version
