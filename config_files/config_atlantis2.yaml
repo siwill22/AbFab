@@ -30,8 +30,8 @@ parallel:
   num_cpus: 4
 
 output:
-  netcdf: 'no_sediment_bathymetry.nc'
-  figure: 'no_sediment_bathymetry.png'
+  netcdf: 'output/no_sediment_bathymetry.nc'
+  figure: 'output/no_sediment_bathymetry.png'
 
 gpu:
   tile_size: 300

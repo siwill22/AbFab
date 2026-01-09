@@ -94,10 +94,10 @@ parallel:
 # ============================================================================
 output:
   # NetCDF output file
-  netcdf: 'complete_bathymetry.nc'
+  netcdf: 'output/complete_bathymetry.nc'
 
   # Visualization figure
-  figure: 'complete_bathymetry.png'
+  figure: 'output/complete_bathymetry.png'
 
   # Figure DPI (resolution)
   dpi: 300

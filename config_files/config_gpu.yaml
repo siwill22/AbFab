@@ -47,8 +47,8 @@ gpu:
 
 # Output files
 output:
-  netcdf: 'bathymetry_gpu.nc'
-  figure: 'bathymetry_gpu.png'
+  netcdf: 'output/bathymetry_gpu.nc'
+  figure: 'output/bathymetry_gpu.png'
   dpi: 300
   verbose: true
 
