@@ -1,0 +1,116 @@
+# AbFab - Complete Bathymetry Generation Configuration
+# ======================================================
+# This configuration file controls all aspects of synthetic bathymetry generation.
+# You can copy this file and modify only the parameters you need - all others will use defaults.
+
+# ============================================================================
+# INPUT DATA FILES
+# ============================================================================
+input:
+  # Seafloor age grid (required)
+  age_file: '/Users/simon/Data/AgeGrids/2020/age.2020.1.GeeK2007.6m.nc'
+
+  # Sediment thickness grid (optional - set to null to disable sediment)
+  # If null, will generate bathymetry without sediment effects
+  sediment_file: '/Users/simon/GIT/pyBacktrack/pybacktrack/bundle_data/sediment_thickness/GlobSed.nc'
+
+  # Alternative: use constant sediment thickness (meters)
+  # Uncomment to override sediment_file with uniform thickness:
+  # constant_sediment: 100.0
+
+# ============================================================================
+# REGION SELECTION
+# ============================================================================
+region:
+  # Longitude bounds (degrees E, -180 to 180)
+  lon_min: -180
+  lon_max: 0
+
+  # Latitude bounds (degrees N, -90 to 90)
+  lat_min: -70
+  lat_max: 0
+
+  # Grid spacing (e.g., '1m' = 1 arcmin, '5m' = 5 arcmin, '30s' = 30 arcsec)
+  spacing: '2m'
+
+# ============================================================================
+# ABYSSAL HILL PARAMETERS
+# ============================================================================
+abyssal_hills:
+  # Base parameters (used as-is if spreading_rate_bins=1, or scaled if >1)
+  H: 250.0          # RMS height (m) - typical range: 50-400
+  lambda_n: 3.0     # Ridge-perpendicular wavelength (km) - typical: 5-20
+  lambda_s: 30.0    # Ridge-parallel wavelength (km) - typical: 3-10
+  D: 2.2            # Fractal dimension - typical: 2.0-2.3
+
+  # Filter type: 'gaussian' (faster) or 'von_karman' (more accurate)
+  filter_type: 'gaussian'
+
+# ============================================================================
+# THERMAL SUBSIDENCE
+# ============================================================================
+subsidence:
+  # Model: 'GDH1' (recommended), 'half_space', or 'plate'
+  model: 'GDH1'
+
+# ============================================================================
+# SEDIMENT TREATMENT
+# ============================================================================
+sediment:
+  # Mode: 'none' (no sediment), 'drape' (simple), or 'fill' (diffusive ponding)
+  mode: 'fill'
+
+  # Diffusion coefficient for 'fill' mode (0-1, higher = more ponding)
+  # Ignored for 'none' and 'drape' modes
+  diffusion: 0.3
+
+# ============================================================================
+# OPTIMIZATION SETTINGS
+# ============================================================================
+optimization:
+  # Use filter bank optimization (strongly recommended - 50x speedup)
+  enabled: true
+
+  # Discretization bins (higher = more accurate but slightly slower)
+  azimuth_bins: 36          # Typical: 18-72
+  sediment_bins: 10         # Typical: 5-20
+  spreading_rate_bins: 20   # Typical: 10-40, set to 1 to disable spatial variation
+
+# ============================================================================
+# PARALLEL PROCESSING
+# ============================================================================
+parallel:
+  # Number of CPU cores to use (set to -1 for all available cores)
+  num_cpus: 8
+
+  # Chunk size in pixels (typical: 50-150)
+  chunk_size: 100
+
+  # Padding pixels to avoid edge effects (typical: 20-30)
+  chunk_pad: 20
+
+# ============================================================================
+# OUTPUT FILES
+# ============================================================================
+output:
+  # NetCDF output file
+  netcdf: 'complete_bathymetry.nc'
+
+  # Visualization figure
+  figure: 'complete_bathymetry.png'
+
+  # Figure DPI (resolution)
+  dpi: 300
+
+  # Verbose output
+  verbose: true
+
+# ============================================================================
+# ADVANCED OPTIONS
+# ============================================================================
+advanced:
+  # Random seed for reproducibility (set to null for random)
+  random_seed: 42
+
+  # Timeout for parallel jobs (seconds)
+  timeout: 600

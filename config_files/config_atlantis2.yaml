@@ -1,0 +1,37 @@
+# No Sediment Configuration
+# Generate bathymetry without any sediment effects
+
+input:
+  age_file: '/Users/simon/GIT/octopus/Atlantis2/masked/Atlantis2_seafloor_age_mask_0.0Ma.nc'
+  sediment_file: null  # No sediment file
+  constant_sediment: null  # No constant sediment either
+
+region:
+  lon_min: -180
+  lon_max: 180
+  lat_min: -70
+  lat_max: 70
+  spacing: '2m'
+
+abyssal_hills:
+  # Base parameters (used as-is if spreading_rate_bins=1, or scaled if >1)
+  H: 250.0          # RMS height (m) - typical range: 50-400
+  lambda_n: 8.0     # Ridge-perpendicular wavelength (km) - typical: 5-20
+  lambda_s: 100.0    # Ridge-parallel wavelength (km) - typical: 3-10
+  D: 2.2            # Fractal dimension - typical: 2.0-2.3
+
+  # Filter type: 'gaussian' (faster) or 'von_karman' (more accurate)
+  filter_type: 'gaussian'
+
+sediment:
+  mode: 'none'  # No sediment processing
+
+parallel:
+  num_cpus: 4
+
+output:
+  netcdf: 'no_sediment_bathymetry.nc'
+  figure: 'no_sediment_bathymetry.png'
+
+gpu:
+  tile_size: 300

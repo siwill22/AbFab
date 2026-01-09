@@ -1,0 +1,23 @@
+# No Sediment Configuration
+# Generate bathymetry without any sediment effects
+
+input:
+  sediment_file: null  # No sediment file
+  constant_sediment: null  # No constant sediment either
+
+region:
+  lon_min: -20
+  lon_max: 50
+  lat_min: -50
+  lat_max: -20
+  spacing: '5m'
+
+sediment:
+  mode: 'none'  # No sediment processing
+
+parallel:
+  num_cpus: 4
+
+output:
+  netcdf: 'no_sediment_bathymetry.nc'
+  figure: 'no_sediment_bathymetry.png'

@@ -1,0 +1,25 @@
+# Quick Test Configuration
+# Fast configuration for testing (should complete in 1-2 minutes)
+
+region:
+  lon_min: 0
+  lon_max: 50
+  lat_min: -40
+  lat_max: -20
+  spacing: '5m'
+
+sediment:
+  mode: 'drape'  # Use faster drape mode for testing
+
+parallel:
+  num_cpus: 4
+  chunk_size: 100
+
+optimization:
+  azimuth_bins: 18  # Fewer bins for speed
+  sediment_bins: 5
+  spreading_rate_bins: 10
+
+output:
+  netcdf: 'test_bathymetry.nc'
+  figure: 'test_bathymetry.png'
