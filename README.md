@@ -578,6 +578,10 @@ python test_optimization.py
 
 Goff, J. A., & Arbic, B. K. (2010). Global prediction of abyssal hill root‐mean‐square heights from small‐scale altimetric gravity variability. *Journal of Geophysical Research: Solid Earth*, 115(B12). https://doi.org/10.1016/j.ocemod.2009.10.001
 
-## Technical Details
+## Additional Documentation
 
-For detailed implementation notes, development history, and guidance for future Claude Code sessions, see [CLAUDE.md](CLAUDE.md).
+**For users**: This README contains all practical information you need.
+
+**For developers/AI**: See [CLAUDE.md](CLAUDE.md) for complete development history and implementation details.
+
+**For specific issues**: See [docs/](docs/) folder for detailed technical documentation on GPU implementation, bug fixes, and analysis.
