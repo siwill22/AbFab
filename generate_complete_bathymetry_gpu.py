@@ -512,7 +512,7 @@ def run_gpu_workflow(config):
         print('='*70)
         print(f"\nTotal processing time: {total_end - total_start:.1f}s")
         print(f"  GPU generation: {t_gpu_end - t_gpu_start:.1f}s")
-        if config['sediment']['mode'] == 'fill':
+        if config['sediment']['mode'] == 'fill' and (sediment_file or constant_sediment):
             print(f"  Diffusive infill: {t_diff_end - t_diff_start:.1f}s")
         
         print(f"\nOutput grid:")
