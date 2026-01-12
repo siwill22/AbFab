@@ -1,0 +1,65 @@
+# AbFab Configuration - Large Mercator Projection Test
+# 90° longitude × 60° latitude spanning Pacific Ocean
+
+input:
+  age_file: '/Users/simon/Data/AgeGrids/2020/age.2020.1.GeeK2007.6m.nc'
+  sediment_file: '/Users/simon/GIT/pyBacktrack/pybacktrack/bundle_data/sediment_thickness/GlobSed.nc'
+  constant_sediment: null
+
+region:
+  lon_min: -180
+  lon_max: 180
+  lat_min: -70
+  lat_max: 70
+  spacing: '6m'  # Coarser spacing for geographic input (0.5 degrees)
+
+# Projection settings
+projection:
+  enabled: true
+  type: 'mercator'
+  lat_limits: [-70, 70]
+  projected_spacing: '5000e'  # 5 km spacing in projected coordinates
+  output_projected: true
+  output_geographic: false  # Skip geographic output (inverse projection has issues)
+
+# Abyssal hill parameters
+abyssal_hills:
+  H: 250.0              # RMS height (m)
+  lambda_n: 3.0         # Cross-axis wavelength (km) - perpendicular to ridges
+  lambda_s: 30.0        # Along-axis wavelength (km) - parallel to ridges
+  D: 2.2                # Fractal dimension
+  filter_type: 'gaussian'
+
+# Subsidence model
+subsidence:
+  model: 'GDH1'
+
+# Sediment handling
+sediment:
+  mode: 'drape'  # Use drape (not fill, to avoid global smoothing issues)
+  diffusion: 0.3
+
+# Optimization settings
+optimization:
+  enabled: true
+  azimuth_bins: 36
+  sediment_bins: 10
+  spreading_rate_bins: 10
+
+# Parallel processing (not used for single-pass projected workflow)
+parallel:
+  num_cpus: 4
+  chunk_size: 100
+  chunk_pad: 20
+
+# Output settings
+output:
+  netcdf: 'output/test_mercator_large.nc'
+  figure: 'output/test_mercator_large.png'
+  dpi: 150
+  verbose: true
+
+# Advanced settings
+advanced:
+  random_seed: 42
+  timeout: 3600
