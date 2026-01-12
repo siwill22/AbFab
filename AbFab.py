@@ -1906,6 +1906,119 @@ def calculate_grid_spacing_projected(grid):
     return spacing_m, spacing_km
 
 
+
+
+def reproject_grid_to_polar_stereo(grid, pole='north', lat_limit=71, lat_standard=None, projected_spacing='5k'):
+    """
+    Reproject a lon-lat grid to polar stereographic projection.
+
+    Parameters:
+    -----------
+    grid : xr.DataArray
+        Input grid in lon-lat coordinates
+        Must have 'lon' and 'lat' dimensions
+    pole : str
+        'north' or 'south' - which pole to project
+    lat_limit : float
+        Latitude limit for data extraction (absolute value)
+        Data from this latitude to the pole will be extracted and projected
+        For Arctic: e.g., 60° extracts data from 60°N to 90°N
+        For Antarctic: e.g., -60° extracts data from -90°S to -60°S
+    lat_standard : float, optional
+        Standard parallel for the projection (absolute value)
+        This is the latitude of true scale in the projection
+        If None, defaults to lat_limit (backward compatible)
+        For NSIDC projections: typically 70° (Arctic) or 71° (Antarctic)
+    projected_spacing : str, optional
+        Grid spacing for projected grid. Examples:
+        - '5k' = 5 km
+        - '5000e' = 5000 meters (same as 5k)
+        Default: '5k' (5 km)
+
+    Returns:
+    --------
+    grid_projected : xr.DataArray
+        Grid in polar stereographic coordinates (x, y in meters)
+        Includes projection info as attributes
+
+    Notes:
+    ------
+    - Uses stereographic projection centered at pole
+    - Projection format: 's<lon0>/<lat_pole>/<lat_standard>/1:1'
+      - North: 's0/90/<lat_standard>/1:1' (centered at North Pole)
+      - South: 's0/-90/<-lat_standard>/1:1' (centered at South Pole)
+    - Grid will be uniform in projected space (dx = dy = constant)
+    - PyGMT is used for reprojection
+
+    Example:
+    --------
+    # Extract data from 60°N to pole, project with 71°N standard parallel
+    grid_proj = reproject_grid_to_polar_stereo(grid, pole='north',
+                                                lat_limit=60, lat_standard=71)
+    """
+    import pygmt
+
+    # Default lat_standard to lat_limit for backward compatibility
+    if lat_standard is None:
+        lat_standard = abs(lat_limit)
+    else:
+        lat_standard = abs(lat_standard)
+
+    # Determine pole parameters
+    if pole.lower() == 'north':
+        lat_pole = 90
+        lat_min = abs(lat_limit)  # Data extraction starts here
+        lat_max = 90
+        lat_standard_signed = lat_standard  # Positive for north
+    elif pole.lower() == 'south':
+        lat_pole = -90
+        lat_min = -90
+        lat_max = -abs(lat_limit)  # Data extraction ends here
+        lat_standard_signed = -lat_standard  # Negative for south
+    else:
+        raise ValueError(f"pole must be 'north' or 'south', got '{pole}'")
+
+    # Get lon bounds from the grid (typically global: -180 to 180)
+    lon_min, lon_max = float(grid.lon.min()), float(grid.lon.max())
+
+    # Define region (all longitudes, from lat_limit to pole)
+    region_geo = [lon_min, lon_max, lat_min, lat_max]
+
+    # Stereographic projection string
+    # Format: s<lon0>/<lat_pole>/<lat_standard>/1:1
+    projection = f"s0/{lat_pole}/{lat_standard_signed}/1:1"
+
+    # Ensure spacing has +e suffix for exact increment mode
+    if not projected_spacing.endswith('+e'):
+        spacing_with_flag = projected_spacing + '+e'
+    else:
+        spacing_with_flag = projected_spacing
+
+    # STEP 1: Use grdcut to extract the polar region first
+    cutgrd = pygmt.grdcut(grid, region=region_geo, verbose='q')
+
+    # STEP 2: Use grdproject to reproject with proper flags
+    grid_proj = pygmt.grdproject(
+        grid=cutgrd,
+        projection=projection,
+        region=region_geo,
+        spacing=spacing_with_flag,
+        center=True,
+        scaling=True
+    )
+
+    # Add projection metadata
+    grid_proj.attrs['projection'] = 'polar_stereographic'
+    grid_proj.attrs['projection_epsg'] = 'EPSG:3413' if pole == 'north' else 'EPSG:3031'  # NSIDC projections
+    grid_proj.attrs['pole'] = pole
+    grid_proj.attrs['lat_limit'] = lat_limit  # Data extraction boundary
+    grid_proj.attrs['lat_standard'] = lat_standard  # Projection standard parallel (unsigned)
+    grid_proj.attrs['units'] = 'meters'
+    grid_proj.attrs['source_bounds'] = region_geo
+
+    return grid_proj
+
+
 def run_complete_bathymetry_workflow_projected(config):
     """
     Complete bathymetry generation workflow using PROJECTED coordinates (Mercator).
@@ -1962,20 +2075,41 @@ def run_complete_bathymetry_workflow_projected(config):
     if not proj_config.get('enabled', False):
         raise ValueError("Projection mode not enabled in config. Set projection.enabled=True")
 
-    if proj_config.get('type', 'mercator') != 'mercator':
-        raise NotImplementedError("Only Mercator projection currently supported")
+    projection_type = proj_config.get('type', 'mercator').lower()
+    if projection_type not in ['mercator', 'polar_stereo']:
+        raise NotImplementedError(f"Projection type '{projection_type}' not supported. Use 'mercator' or 'polar_stereo'")
 
-    lat_limits = proj_config.get('lat_limits', [-70, 70])
     output_projected = proj_config.get('output_projected', True)
-    output_geographic = proj_config.get('output_geographic', True)
+    output_geographic = proj_config.get('output_geographic', False)  # Default false (inverse issues)
     projected_spacing = proj_config.get('projected_spacing', '5k')  # Default 5 km
+
+    # Get projection-specific parameters
+    if projection_type == 'mercator':
+        lat_limits = proj_config.get('lat_limits', [-70, 70])
+        proj_desc = f"Mercator (equatorial, EPSG:3395)"
+        proj_params = {'lat_limits': lat_limits}
+    else:  # polar_stereo
+        pole = proj_config.get('pole', 'north').lower()
+        lat_limit = proj_config.get('lat_limit', 71)
+        lat_standard = proj_config.get('lat_standard', None)  # Optional, defaults to lat_limit if None
+        epsg = 'EPSG:3413' if pole == 'north' else 'EPSG:3031'
+        proj_desc = f"Polar Stereographic ({pole} pole, {epsg})"
+        proj_params = {'pole': pole, 'lat_limit': lat_limit, 'lat_standard': lat_standard}
 
     if verbose:
         print("="*70)
         print("Complete Bathymetry Generation - PROJECTED COORDINATES")
         print("="*70)
-        print(f"Projection: Mercator (equatorial, EPSG:3395)")
-        print(f"Latitude limits: {lat_limits}")
+        print(f"Projection: {proj_desc}")
+        if projection_type == 'mercator':
+            print(f"Latitude limits: {lat_limits}")
+        else:
+            print(f"Pole: {pole}")
+            print(f"Data latitude limit: {lat_limit}° (data boundary)")
+            if lat_standard is not None:
+                print(f"Projection standard parallel: {lat_standard}° (true scale)")
+            else:
+                print(f"Projection standard parallel: {abs(lat_limit)}° (default, = lat_limit)")
         print(f"Projected grid spacing: {projected_spacing}")
 
     # ========================================================================
@@ -2027,19 +2161,29 @@ def run_complete_bathymetry_workflow_projected(config):
     original_lat = age_da_geo.lat.values
 
     # ========================================================================
-    # REPROJECT TO MERCATOR
+    # REPROJECT TO PROJECTED COORDINATES
     # ========================================================================
     if verbose:
-        print("\nReprojecting to Mercator...")
+        proj_name = "Mercator" if projection_type == 'mercator' else f"Polar Stereographic ({pole} pole)"
+        print(f"\nReprojecting to {proj_name}...")
 
-    age_da = reproject_grid_to_mercator(age_da_geo, lat_limits=lat_limits,
-                                         projected_spacing=projected_spacing)
-
-    if sed_da_geo is not None:
-        sed_da = reproject_grid_to_mercator(sed_da_geo, lat_limits=lat_limits,
+    # Use appropriate projection function
+    if projection_type == 'mercator':
+        age_da = reproject_grid_to_mercator(age_da_geo, **proj_params,
                                              projected_spacing=projected_spacing)
-    else:
-        sed_da = None
+        if sed_da_geo is not None:
+            sed_da = reproject_grid_to_mercator(sed_da_geo, **proj_params,
+                                                 projected_spacing=projected_spacing)
+        else:
+            sed_da = None
+    else:  # polar_stereo
+        age_da = reproject_grid_to_polar_stereo(age_da_geo, **proj_params,
+                                                  projected_spacing=projected_spacing)
+        if sed_da_geo is not None:
+            sed_da = reproject_grid_to_polar_stereo(sed_da_geo, **proj_params,
+                                                      projected_spacing=projected_spacing)
+        else:
+            sed_da = None
 
     # Calculate grid spacing (uniform in projected space!)
     spacing_m, spacing_km = calculate_grid_spacing_projected(age_da)
@@ -2171,22 +2315,30 @@ def run_complete_bathymetry_workflow_projected(config):
 
     # Create output DataArray (projected coordinates)
     # Copy projection metadata from age_da
+    proj_attrs = {
+        'units': 'meters',
+        'description': f'Synthetic ocean floor bathymetry ({projection_type} projection)',
+        'projection': age_da.attrs.get('projection', projection_type),
+        'projection_epsg': age_da.attrs.get('projection_epsg'),
+        'grid_spacing_m': spacing_m,
+        'grid_spacing_km': spacing_km,
+        'source_bounds': age_da.attrs.get('source_bounds', region_geo)
+    }
+
+    # Add projection-specific attributes
+    if projection_type == 'mercator':
+        proj_attrs['lat_limits'] = age_da.attrs.get('lat_limits')
+    else:  # polar_stereo
+        proj_attrs['pole'] = age_da.attrs.get('pole')
+        proj_attrs['lat_limit'] = age_da.attrs.get('lat_limit')
+        proj_attrs['lat_standard'] = age_da.attrs.get('lat_standard')
+
     complete_grid_proj = xr.DataArray(
         basement_bathy,
         coords={'y': age_da.y, 'x': age_da.x},
         dims=['y', 'x'],
         name='bathymetry',
-        attrs={
-            'units': 'meters',
-            'description': 'Synthetic ocean floor bathymetry (Mercator projection)',
-            'projection': age_da.attrs.get('projection', 'mercator'),
-            'projection_epsg': age_da.attrs.get('projection_epsg', 'EPSG:3395'),
-            'projection_type': 'Mercator (equatorial)',
-            'grid_spacing_m': spacing_m,
-            'grid_spacing_km': spacing_km,
-            'source_bounds': age_da.attrs.get('source_bounds', region_geo),
-            'lat_limits': age_da.attrs.get('lat_limits', lat_limits)
-        }
+        attrs=proj_attrs
     )
 
     # ========================================================================
