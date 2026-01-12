@@ -36,7 +36,7 @@ def load_config(config_file='config_default.yaml'):
     default_config = {
         'input': {
             'age_file': '/Users/simon/Data/AgeGrids/2020/age.2020.1.GeeK2007.6m.nc',
-            'sediment_file': '/Users/simon/GIT/pyBacktrack/pybacktrack/bundle_data/sediment_thickness/GlobSed.nc',
+            'sediment_file': None,  # User must specify sediment file or use constant_sediment
             'constant_sediment': None
         },
         'region': {
