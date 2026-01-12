@@ -582,12 +582,17 @@ def main():
     print(f"Spacing: {config['region']['spacing']}")
     print(f"Output: {config['output']['netcdf']}")
     
-    # Run workflow
+    # Run workflow (detect projection mode)
     try:
-        complete_grid = run_gpu_workflow(config)
-        print("\n" + "="*70)
-        print("SUCCESS!")
-        print("="*70)
+        # Check if projection mode is enabled
+        projection_enabled = config.get('projection', {}).get('enabled', False)
+
+        if projection_enabled:
+            # Use GPU projected coordinate workflow
+            results = af_gpu.run_complete_bathymetry_workflow_projected_gpu(config)
+        else:
+            # Use standard geographic coordinate GPU workflow
+            complete_grid = run_gpu_workflow(config)
     except KeyboardInterrupt:
         print("\n\nInterrupted by user")
         sys.exit(1)

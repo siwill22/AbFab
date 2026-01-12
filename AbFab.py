@@ -1720,6 +1720,555 @@ def process_complete_bathymetry_chunk(coord, age_dataarray, sed_dataarray, rand_
     )
 
 
+#### Projection Utilities
+
+def reproject_grid_to_mercator(grid, lat_limits=[-70, 70], projected_spacing='5k'):
+    """
+    Reproject a lon-lat grid to Mercator projection.
+
+    Parameters:
+    -----------
+    grid : xr.DataArray
+        Input grid in lon-lat coordinates
+        Must have 'lon' and 'lat' dimensions
+    lat_limits : list, optional
+        Latitude limits for valid Mercator projection [lat_min, lat_max]
+        Default: [-70, 70] (avoids extreme distortion at poles)
+    projected_spacing : str, optional
+        Grid spacing for projected grid. Examples:
+        - '5k' = 5 km
+        - '5000e' = 5000 meters (same as 5k)
+        - '0.05' = 0.05 degrees in projected units
+        Default: '5k' (5 km)
+
+    Returns:
+    --------
+    grid_projected : xr.DataArray
+        Grid in Mercator coordinates (x, y in meters)
+        Includes projection info as attributes
+
+    Notes:
+    ------
+    - Uses equatorial Mercator (standard parallel = 0°)
+    - Projection: EPSG:3395 (World Mercator)
+    - Grid will be uniform in projected space (dx = dy = constant)
+    - PyGMT is used for reprojection with conservative resampling
+    - Spacing suffixes: 'e' (meters), 'k' (kilometers), 'M' (miles), 'n' (nautical miles)
+    """
+    import pygmt
+
+    # Get bounds from the grid
+    lon_min, lon_max = float(grid.lon.min()), float(grid.lon.max())
+    lat_min_grid, lat_max_grid = float(grid.lat.min()), float(grid.lat.max())
+
+    # Apply latitude limits for Mercator (if specified)
+    lat_min, lat_max = lat_limits
+    lat_min_actual = max(lat_min, lat_min_grid)
+    lat_max_actual = min(lat_max, lat_max_grid)
+
+    if lat_min_actual >= lat_max_actual:
+        raise ValueError(f"No data in latitude range {lat_limits}")
+
+    # Define Mercator projection region
+    # Format: lon_min/lon_max/lat_min/lat_max for geographic input
+    region_geo = [lon_min, lon_max, lat_min_actual, lat_max_actual]
+
+    # Mercator projection string for grdproject
+    # Format: m<lon0>/<lat0>/<scale> where scale is 1:1 for equal scale
+    projection = "m0/0/1:1"  # Mercator centered at 0,0 with 1:1 scale
+
+    # Ensure spacing has +e suffix for exact increment mode
+    if not projected_spacing.endswith('+e'):
+        spacing_with_flag = projected_spacing + '+e'
+    else:
+        spacing_with_flag = projected_spacing
+
+    # STEP 1: Use grdcut to extract the region first (PyGMT quirk)
+    cutgrd = pygmt.grdcut(grid, region=region_geo, verbose='q')
+
+    # STEP 2: Use grdproject to reproject with proper flags
+    grid_proj = pygmt.grdproject(
+        grid=cutgrd,
+        projection=projection,
+        region=region_geo,
+        spacing=spacing_with_flag,
+        center=True,      # Center the grid
+        scaling=True      # Apply scaling
+    )
+
+    # Add projection metadata
+    grid_proj.attrs['projection'] = 'mercator'
+    grid_proj.attrs['projection_epsg'] = 'EPSG:3395'
+    grid_proj.attrs['units'] = 'meters'
+    grid_proj.attrs['lat_limits'] = lat_limits
+    grid_proj.attrs['source_bounds'] = region_geo
+
+    return grid_proj
+
+
+def reproject_grid_from_mercator(grid, target_lon, target_lat):
+    """
+    Reproject a Mercator grid back to lon-lat coordinates.
+
+    Parameters:
+    -----------
+    grid : xr.DataArray
+        Grid in Mercator projection (x, y in meters)
+    target_lon : np.ndarray
+        Target longitude coordinates (1D array)
+    target_lat : np.ndarray
+        Target latitude coordinates (1D array)
+
+    Returns:
+    --------
+    grid_geo : xr.DataArray
+        Grid reprojected to lon-lat coordinates
+
+    Notes:
+    ------
+    - Inverse of reproject_grid_to_mercator()
+    - Uses PyGMT for accurate inverse projection
+    """
+    import pygmt
+
+    # Get original geographic bounds from attributes
+    if 'source_bounds' in grid.attrs:
+        region_geo = grid.attrs['source_bounds']
+    else:
+        # Estimate from data if not available
+        raise ValueError("Grid missing 'source_bounds' attribute. Cannot reproject.")
+
+    # Create target geographic region
+    lon_min, lon_max = float(target_lon.min()), float(target_lon.max())
+    lat_min, lat_max = float(target_lat.min()), float(target_lat.max())
+
+    # Calculate target spacing
+    lon_spacing = float(target_lon[1] - target_lon[0])
+    lat_spacing = float(target_lat[1] - target_lat[0])
+    spacing_deg = f"{lon_spacing}/{lat_spacing}"
+
+    # Mercator projection (inverse)
+    projection = "m0/0/1:1"  # Same as forward projection
+
+    # Reproject back to geographic
+    grid_geo = pygmt.grdproject(
+        grid=grid,
+        projection=projection,
+        region=[lon_min, lon_max, lat_min, lat_max],
+        spacing=spacing_deg,
+        inverse=True  # Inverse projection
+    )
+
+    return grid_geo
+
+
+def calculate_grid_spacing_projected(grid):
+    """
+    Calculate uniform grid spacing from projected coordinates.
+
+    Parameters:
+    -----------
+    grid : xr.DataArray
+        Grid in projected coordinates with 'x' and 'y' dimensions
+
+    Returns:
+    --------
+    spacing_m : float
+        Grid spacing in meters (same for x and y in projected space)
+    spacing_km : float
+        Grid spacing in kilometers
+
+    Notes:
+    ------
+    - In projected coordinates, spacing is uniform: dx = dy = constant
+    - Much simpler than geographic coordinates where dx varies with latitude
+    - Returns mean of x and y spacing (should be identical)
+    """
+    # Get coordinate arrays
+    if 'x' in grid.dims and 'y' in grid.dims:
+        x_coords = grid.x.values
+        y_coords = grid.y.values
+    else:
+        raise ValueError("Grid must have 'x' and 'y' dimensions for projected coordinates")
+
+    # Calculate spacing (should be uniform)
+    dx = float(x_coords[1] - x_coords[0])
+    dy = float(y_coords[1] - y_coords[0])
+
+    # Check uniformity
+    if not np.allclose(dx, dy, rtol=0.01):
+        print(f"Warning: x-spacing ({dx:.2f} m) differs from y-spacing ({dy:.2f} m)")
+        print("Using mean spacing")
+
+    spacing_m = (abs(dx) + abs(dy)) / 2
+    spacing_km = spacing_m / 1000.0
+
+    return spacing_m, spacing_km
+
+
+def run_complete_bathymetry_workflow_projected(config):
+    """
+    Complete bathymetry generation workflow using PROJECTED coordinates (Mercator).
+
+    This workflow variant:
+    1. Reprojects lon-lat inputs to Mercator projection
+    2. Performs all calculations in projected space (uniform grid spacing!)
+    3. Optionally reprojects output back to lon-lat
+    4. Can output both projected and geographic grids
+
+    Key advantages in projected coordinates:
+    - Uniform grid spacing: dx = dy = constant (no latitude-dependent distortion)
+    - No spherical corrections needed for gradients
+    - Physically accurate at all latitudes within projection limits
+    - Simplified processing (no cos(lat) factors!)
+
+    Parameters:
+    -----------
+    config : dict
+        Configuration dictionary. Must include:
+        {
+            'projection': {
+                'enabled': True,
+                'type': 'mercator',  # Only Mercator supported currently
+                'lat_limits': [-70, 70],  # Valid Mercator latitude range
+                'output_projected': bool,  # Save output in Mercator projection?
+                'output_geographic': bool   # Save output in lon-lat?
+            },
+            ... (same as run_complete_bathymetry_workflow)
+        }
+
+    Returns:
+    --------
+    result : dict
+        Dictionary containing:
+        - 'projected': xr.DataArray (if output_projected=True)
+        - 'geographic': xr.DataArray (if output_geographic=True)
+
+    Notes:
+    ------
+    - Abyssal hill parameters (lambda_n, lambda_s) should be in km
+    - Mercator standard parallel is always equator (0°)
+    - Lat limits default to [-70, 70] to avoid extreme polar distortion
+    """
+    import time
+    import pygmt
+    import xarray as xr
+    from joblib import Parallel, delayed
+    from tqdm import tqdm
+
+    verbose = config['output'].get('verbose', True)
+    proj_config = config.get('projection', {})
+
+    if not proj_config.get('enabled', False):
+        raise ValueError("Projection mode not enabled in config. Set projection.enabled=True")
+
+    if proj_config.get('type', 'mercator') != 'mercator':
+        raise NotImplementedError("Only Mercator projection currently supported")
+
+    lat_limits = proj_config.get('lat_limits', [-70, 70])
+    output_projected = proj_config.get('output_projected', True)
+    output_geographic = proj_config.get('output_geographic', True)
+    projected_spacing = proj_config.get('projected_spacing', '5k')  # Default 5 km
+
+    if verbose:
+        print("="*70)
+        print("Complete Bathymetry Generation - PROJECTED COORDINATES")
+        print("="*70)
+        print(f"Projection: Mercator (equatorial, EPSG:3395)")
+        print(f"Latitude limits: {lat_limits}")
+        print(f"Projected grid spacing: {projected_spacing}")
+
+    # ========================================================================
+    # LOAD INPUT DATA (GEOGRAPHIC)
+    # ========================================================================
+    if verbose:
+        print("\nLoading input data (geographic coordinates)...")
+
+    age_file = config['input']['age_file']
+    sediment_file = config['input'].get('sediment_file')
+    constant_sediment = config['input'].get('constant_sediment')
+    spacing = config['region']['spacing']
+
+    # Load data for requested region (not global!)
+    lon_min = config['region']['lon_min']
+    lon_max = config['region']['lon_max']
+    lat_min = config['region']['lat_min']
+    lat_max = config['region']['lat_max']
+    region_str = f"{lon_min}/{lon_max}/{lat_min}/{lat_max}"
+    region_geo = [lon_min, lon_max, lat_min, lat_max]  # List format for later use
+
+    age_da_geo = pygmt.grdsample(age_file, region=region_str, spacing=spacing)
+
+    if verbose:
+        print(f"  Age file: {age_file}")
+        print(f"  Region: {region_str}")
+        print(f"  Grid shape (geographic): {age_da_geo.shape}")
+
+    # Handle sediment
+    if sediment_file is not None:
+        sed_da_geo = pygmt.grdsample(sediment_file, region=region_str, spacing=spacing)
+        sed_da_geo = sed_da_geo.where(np.isfinite(sed_da_geo), 1.)
+        sed_da_geo = sed_da_geo.where(sed_da_geo < 1000., 1000.)
+        if verbose:
+            print(f"  Sediment file: {sediment_file}")
+    elif constant_sediment is not None:
+        sed_da_geo = age_da_geo.copy()
+        sed_da_geo.data = np.full_like(age_da_geo.data, constant_sediment)
+        sed_da_geo = sed_da_geo.where(~np.isnan(age_da_geo.data), np.nan)
+        if verbose:
+            print(f"  Constant sediment: {constant_sediment} m")
+    else:
+        sed_da_geo = None
+        if verbose:
+            print("  No sediment")
+
+    # Store original geographic coordinates for inverse projection
+    original_lon = age_da_geo.lon.values
+    original_lat = age_da_geo.lat.values
+
+    # ========================================================================
+    # REPROJECT TO MERCATOR
+    # ========================================================================
+    if verbose:
+        print("\nReprojecting to Mercator...")
+
+    age_da = reproject_grid_to_mercator(age_da_geo, lat_limits=lat_limits,
+                                         projected_spacing=projected_spacing)
+
+    if sed_da_geo is not None:
+        sed_da = reproject_grid_to_mercator(sed_da_geo, lat_limits=lat_limits,
+                                             projected_spacing=projected_spacing)
+    else:
+        sed_da = None
+
+    # Calculate grid spacing (uniform in projected space!)
+    spacing_m, spacing_km = calculate_grid_spacing_projected(age_da)
+
+    if verbose:
+        print(f"  Grid shape (projected): {age_da.shape}")
+        print(f"  Grid spacing: {spacing_m:.1f} m ({spacing_km:.3f} km)")
+        print(f"  X range: {age_da.x.min().values/1e6:.2f} to {age_da.x.max().values/1e6:.2f} × 10⁶ m")
+        print(f"  Y range: {age_da.y.min().values/1e6:.2f} to {age_da.y.max().values/1e6:.2f} × 10⁶ m")
+
+    # ========================================================================
+    # GENERATE GLOBAL RANDOM FIELD
+    # ========================================================================
+    if verbose:
+        print("\nGenerating global random field...")
+
+    random_seed = config['advanced'].get('random_seed')
+    if random_seed is not None:
+        np.random.seed(random_seed)
+
+    rand_da = age_da.copy()
+    rand_da.data = generate_random_field(rand_da.data.shape)
+
+    # ========================================================================
+    # CALCULATE AZIMUTH AND SPREADING RATE (NO SPHERICAL CORRECTIONS!)
+    # ========================================================================
+    if verbose:
+        print("\nCalculating azimuth and spreading rate (projected space)...")
+
+    # NO lat_coords argument - no spherical correction needed!
+    azimuth_global = calculate_azimuth_from_age(age_da.data, lat_coords=None)
+    spreading_rate_global = calculate_spreading_rate_from_age(
+        age_da.data, spacing_km, lat_coords=None  # No spherical correction!
+    )
+
+    # Handle NaN spreading rates
+    sr_median_global = float(np.nanmedian(spreading_rate_global))
+    spreading_rate_global = np.where(np.isnan(spreading_rate_global),
+                                      sr_median_global,
+                                      spreading_rate_global)
+    sr_min_global = float(np.nanmin(spreading_rate_global))
+    sr_max_global = float(np.nanmax(spreading_rate_global))
+
+    if sed_da is not None:
+        sed_min_global = float(np.nanmin(sed_da.data))
+        sed_max_global = float(np.nanmax(sed_da.data))
+    else:
+        sed_min_global, sed_max_global = 0.0, 0.0
+
+    if verbose:
+        print(f"  Spreading rate range: {sr_min_global:.1f} - {sr_max_global:.1f} mm/yr")
+        print(f"  Spreading rate median: {sr_median_global:.1f} mm/yr")
+        if sed_da is not None:
+            print(f"  Sediment range: {sed_min_global:.1f} - {sed_max_global:.1f} m")
+
+    # ========================================================================
+    # COMPUTE BIN LEVELS
+    # ========================================================================
+    spreading_rate_bins = config['optimization']['spreading_rate_bins']
+    sediment_bins = config['optimization']['sediment_bins']
+
+    sr_range = sr_max_global - sr_min_global
+    if sr_range < 1e-6 or spreading_rate_bins == 1:
+        spreading_rate_levels_global = np.array([np.mean([sr_min_global, sr_max_global])])
+    else:
+        spreading_rate_levels_global = np.linspace(sr_min_global, sr_max_global, spreading_rate_bins)
+
+    sed_range = sed_max_global - sed_min_global
+    if sed_range < 1e-6:
+        sediment_levels_global = np.array([sed_min_global])
+    else:
+        sediment_levels_global = np.linspace(sed_min_global, sed_max_global, sediment_bins)
+
+    if verbose:
+        print(f"\nBin levels:")
+        print(f"  Spreading rate bins: {len(spreading_rate_levels_global)}")
+        print(f"  Sediment bins: {len(sediment_levels_global)}")
+
+    # Create DataArrays
+    azimuth_da = xr.DataArray(azimuth_global, coords={'y': age_da.y, 'x': age_da.x},
+                               dims=['y', 'x'], name='azimuth')
+    spreading_rate_da = xr.DataArray(spreading_rate_global, coords={'y': age_da.y, 'x': age_da.x},
+                                      dims=['y', 'x'], name='spreading_rate')
+
+    # ========================================================================
+    # GENERATE BATHYMETRY
+    # ========================================================================
+    if verbose:
+        print("\n" + "="*70)
+        print("Generating synthetic bathymetry...")
+        print("="*70)
+
+    params_base = config['abyssal_hills']
+
+    start_time = time.time()
+
+    # For now, generate in one shot (can add chunking later if needed)
+    if verbose:
+        print("Processing in projected coordinates (single pass)...")
+
+    basement_bathy = generate_complete_bathymetry(
+        seafloor_age=age_da.data,
+        sediment_thickness=sed_da.data if sed_da is not None else None,
+        params=params_base,
+        grid_spacing_km=spacing_km,
+        subsidence_model=config['subsidence']['model'],
+        sediment_mode='drape',  # Always drape first (fill applied globally if needed)
+        sediment_diffusion=config['sediment']['diffusion'],
+        random_field=rand_da.data,
+        optimize=config['optimization']['enabled'],
+        azimuth_bins=config['optimization']['azimuth_bins'],
+        sediment_bins=sediment_bins,
+        spreading_rate_bins=spreading_rate_bins,
+        filter_type=params_base.get('filter_type', 'gaussian'),
+        base_params=params_base,
+        sediment_range=(sed_min_global, sed_max_global),  # Fixed: use tuple!
+        spreading_rate_range=(sr_min_global, sr_max_global),  # Fixed: use tuple!
+        sediment_levels=sediment_levels_global,
+        spreading_rate_levels=spreading_rate_levels_global,
+        spreading_rate_fill_value=sr_median_global,
+        lat_coords=None,  # NO spherical correction!
+        azimuth_field=azimuth_da.data,
+        spreading_rate_field=spreading_rate_da.data
+    )
+
+    elapsed = time.time() - start_time
+    if verbose:
+        print(f"  ✓ Completed in {elapsed:.1f} seconds")
+
+    # Create output DataArray (projected coordinates)
+    # Copy projection metadata from age_da
+    complete_grid_proj = xr.DataArray(
+        basement_bathy,
+        coords={'y': age_da.y, 'x': age_da.x},
+        dims=['y', 'x'],
+        name='bathymetry',
+        attrs={
+            'units': 'meters',
+            'description': 'Synthetic ocean floor bathymetry (Mercator projection)',
+            'projection': age_da.attrs.get('projection', 'mercator'),
+            'projection_epsg': age_da.attrs.get('projection_epsg', 'EPSG:3395'),
+            'projection_type': 'Mercator (equatorial)',
+            'grid_spacing_m': spacing_m,
+            'grid_spacing_km': spacing_km,
+            'source_bounds': age_da.attrs.get('source_bounds', region_geo),
+            'lat_limits': age_da.attrs.get('lat_limits', lat_limits)
+        }
+    )
+
+    # ========================================================================
+    # GLOBAL DIFFUSIVE SEDIMENT INFILL (if requested)
+    # ========================================================================
+    if config['sediment']['mode'] == 'fill' and sed_da is not None:
+        if verbose:
+            print("\nApplying global diffusive sediment infill...")
+
+        final_grid = apply_diffusive_sediment_infill(
+            complete_grid_proj.data, sed_da.data, spacing_km,
+            config['sediment']['diffusion']
+        )
+        complete_grid_proj.data[:] = final_grid
+
+        if verbose:
+            print("  ✓ Diffusive infill applied")
+
+    # ========================================================================
+    # SAVE PROJECTED OUTPUT
+    # ========================================================================
+    results = {}
+
+    if output_projected:
+        output_nc_proj = config['output']['netcdf'].replace('.nc', '_projected.nc')
+        if verbose:
+            print(f"\nSaving projected grid: {output_nc_proj}")
+
+        complete_grid_proj.to_netcdf(output_nc_proj)
+        results['projected'] = complete_grid_proj
+
+        if verbose:
+            print(f"  ✓ Saved {complete_grid_proj.shape} grid")
+
+    # ========================================================================
+    # REPROJECT BACK TO GEOGRAPHIC (if requested)
+    # ========================================================================
+    if output_geographic:
+        if verbose:
+            print("\nReprojecting back to geographic coordinates...")
+
+        # Clip original coords to lat_limits
+        lat_mask = (original_lat >= lat_limits[0]) & (original_lat <= lat_limits[1])
+        target_lat = original_lat[lat_mask]
+        target_lon = original_lon
+
+        complete_grid_geo = reproject_grid_from_mercator(
+            complete_grid_proj, target_lon, target_lat
+        )
+
+        complete_grid_geo.attrs['units'] = 'meters'
+        complete_grid_geo.attrs['description'] = 'Synthetic ocean floor bathymetry (reprojected from Mercator)'
+
+        output_nc_geo = config['output']['netcdf']
+        if verbose:
+            print(f"\nSaving geographic grid: {output_nc_geo}")
+
+        complete_grid_geo.to_netcdf(output_nc_geo)
+        results['geographic'] = complete_grid_geo
+
+        if verbose:
+            print(f"  ✓ Saved {complete_grid_geo.shape} grid")
+
+    # ========================================================================
+    # SUMMARY
+    # ========================================================================
+    if verbose:
+        print("\n" + "="*70)
+        print("COMPLETED SUCCESSFULLY!")
+        print("="*70)
+        if output_projected:
+            print(f"\nProjected output: {output_nc_proj}")
+            print(f"  Shape: {complete_grid_proj.shape}")
+            print(f"  Depth range: {float(complete_grid_proj.min()):.0f} to {float(complete_grid_proj.max()):.0f} m")
+        if output_geographic:
+            print(f"\nGeographic output: {output_nc_geo}")
+            print(f"  Shape: {complete_grid_geo.shape}")
+            print(f"  Depth range: {float(complete_grid_geo.min()):.0f} to {float(complete_grid_geo.max()):.0f} m")
+
+    return results
+
+
 def run_complete_bathymetry_workflow(config):
     """
     Complete bathymetry generation workflow.

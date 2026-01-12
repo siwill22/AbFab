@@ -148,18 +148,38 @@ def main():
     print(f"  CPUs: {config['parallel']['num_cpus']}")
     print(f"  Output: {config['output']['netcdf']}")
 
-    # Run the workflow
+    # Run the workflow (detect projection mode)
     try:
-        complete_grid = af.run_complete_bathymetry_workflow(config)
-        print("\n" + "="*70)
-        print("SUCCESS!")
-        print("="*70)
-        print(f"\nGenerated files:")
-        print(f"  • {config['output']['netcdf']}")
-        print(f"\nGrid statistics:")
-        print(f"  Shape: {complete_grid.shape}")
-        print(f"  Depth range: {float(complete_grid.min()):.0f} to {float(complete_grid.max()):.0f} m")
-        print(f"  Valid pixels: {(~complete_grid.isnull()).sum().values}/{complete_grid.size}")
+        # Check if projection mode is enabled
+        projection_enabled = config.get('projection', {}).get('enabled', False)
+
+        if projection_enabled:
+            # Use projected coordinate workflow
+            results = af.run_complete_bathymetry_workflow_projected(config)
+            print("\n" + "="*70)
+            print("SUCCESS!")
+            print("="*70)
+            print(f"\nGenerated files:")
+            if 'projected' in results:
+                print(f"  • {config['output']['netcdf'].replace('.nc', '_projected.nc')} (Mercator)")
+                print(f"    Shape: {results['projected'].shape}")
+                print(f"    Depth range: {float(results['projected'].min()):.0f} to {float(results['projected'].max()):.0f} m")
+            if 'geographic' in results:
+                print(f"  • {config['output']['netcdf']} (lon-lat)")
+                print(f"    Shape: {results['geographic'].shape}")
+                print(f"    Depth range: {float(results['geographic'].min()):.0f} to {float(results['geographic'].max()):.0f} m")
+        else:
+            # Use standard geographic coordinate workflow
+            complete_grid = af.run_complete_bathymetry_workflow(config)
+            print("\n" + "="*70)
+            print("SUCCESS!")
+            print("="*70)
+            print(f"\nGenerated files:")
+            print(f"  • {config['output']['netcdf']}")
+            print(f"\nGrid statistics:")
+            print(f"  Shape: {complete_grid.shape}")
+            print(f"  Depth range: {float(complete_grid.min()):.0f} to {float(complete_grid.max()):.0f} m")
+            print(f"  Valid pixels: {(~complete_grid.isnull()).sum().values}/{complete_grid.size}")
 
     except KeyboardInterrupt:
         print("\n\nInterrupted by user")
