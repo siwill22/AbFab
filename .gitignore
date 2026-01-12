@@ -175,3 +175,9 @@ no_sediment_bathymetry_gpu.nc
 test_bathymetry.nc
 *.xml
 complete_bathymetry_gpu.nc
+output/test_mercator_large_gpu_projected.nc
+output/test_mercator_large_projected.nc
+output/test_mercator_small.nc
+output/test_mercator_small_gpu.nc
+output/test_mercator_small_gpu_projected.nc
+output/test_mercator_small_projected.nc
