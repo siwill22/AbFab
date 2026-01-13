@@ -253,6 +253,43 @@ for chunk, coord in zip(results, coords):
   - Sediment thickness made optional (`sediment_file: null`)
 - **Files**: `AbFab_gpu.py`, `generate_complete_bathymetry_gpu.py`, `test_gpu_cpu_match.py`
 
+### Phase 9: Projection System & Bin Consistency (January 2025)
+- **New feature**: Projected coordinate workflows (Mercator, Polar Stereographic)
+  - **Mercator (EPSG:3395)**: Equatorial/mid-latitude regions (typically ±70°)
+  - **Polar Stereographic**: Arctic (EPSG:3413) and Antarctic (EPSG:3031) regions
+  - Uniform grid spacing in projected coordinates
+  - No spherical Earth corrections needed (Cartesian math)
+  - Inverse projection option to output geographic coordinates
+- **New feature**: Bin consistency system for multi-grid blending
+  - **Problem**: Independent grid generations use different bin ranges → discontinuities at boundaries
+  - **Solution**: Save/load or manual bin range specification
+  - **Implementation**:
+    - `load_bin_config`: Load sediment/spreading rate ranges from YAML file
+    - `save_bin_config`: Save auto-detected ranges to YAML file
+    - Three-tier priority: loaded > manual > auto-detect
+  - **Workflow**: Generate global Mercator first with `save_bin_config`, then polar grids with `load_bin_config`
+  - **Result**: Identical bin ranges across all grids → seamless blending
+- **Configuration parameters**:
+  ```yaml
+  projection:
+    enabled: true
+    type: 'mercator'  # or 'polar_stereo'
+    lat_limits: [-70, 70]  # Mercator only
+    pole: 'north'  # Polar stereo only
+    lat_limit: 71  # Polar stereo only
+    projected_spacing: '5k'  # Grid spacing in meters
+
+  optimization:
+    sediment_range: [0, 1000]  # Manual ranges (optional)
+    spreading_rate_range: [0, 250]
+    save_bin_config: 'output/bin_config.yaml'  # Save option
+    load_bin_config: 'output/bin_config.yaml'  # Load option
+  ```
+- **Code changes**:
+  - CPU: [AbFab.py:7-8](AbFab.py#L7-L8) (imports), [AbFab.py:752](AbFab.py#L752) (signature), [AbFab.py:894-912](AbFab.py#L894-L912) (load), [AbFab.py:1094-1122](AbFab.py#L1094-L1122) (save)
+  - GPU: [AbFab_gpu.py:566-581](AbFab_gpu.py#L566-L581) (signature), [AbFab_gpu.py:655-706](AbFab_gpu.py#L655-L706) (load), [AbFab_gpu.py:733-761](AbFab_gpu.py#L733-L761) (save)
+- **Documentation**: [docs/projections.md](docs/projections.md), [docs/blending.md](docs/blending.md)
+
 ## Common Pitfalls & Solutions
 
 ### 1. "I see visible boundaries/discontinuities at chunk edges"
@@ -483,4 +520,21 @@ There were TWO separate causes of chunk boundaries, both now solved:
 3. Verify trilinear interpolation is enabled (it's automatic with `optimize=True`)
 4. Don't suggest blending - it doesn't work and isn't needed
 
-**Last Major Update**: January 2025 (diffusive sediment fix, complete bathymetry workflow)
+**Multi-Grid Blending (Phase 9)**:
+If generating multiple grids for blending (e.g., global Mercator + Arctic + Antarctic):
+1. **MUST use bin consistency system** - different bin ranges cause discontinuities at blend boundaries
+2. Generate largest grid (usually global) first with `save_bin_config`
+3. Generate polar grids with `load_bin_config` to use identical bin ranges
+4. **Example workflow**:
+   ```yaml
+   # config_global.yaml
+   optimization:
+     save_bin_config: 'output/bin_config.yaml'
+
+   # config_arctic.yaml
+   optimization:
+     load_bin_config: 'output/bin_config.yaml'
+   ```
+5. See [docs/blending.md](docs/blending.md) for complete workflow
+
+**Last Major Update**: January 2025 (projection system, bin consistency for multi-grid blending)

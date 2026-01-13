@@ -580,8 +580,10 @@ Goff, J. A., & Arbic, B. K. (2010). Global prediction of abyssal hill root‐mea
 
 ## Additional Documentation
 
-**For users**: This README contains all practical information you need.
+### User Guides
+- **[Projection System](docs/projections.md)** - Mercator and polar stereographic projections
+- **[Multi-Grid Blending](docs/blending.md)** - Combining global + polar grids seamlessly
 
-**For developers/AI**: See [CLAUDE.md](CLAUDE.md) for complete development history and implementation details.
-
-**For specific issues**: See [docs/](docs/) folder for detailed technical documentation on GPU implementation, bug fixes, and analysis.
+### Developer Documentation
+- **[CLAUDE.md](CLAUDE.md)** - Complete development history and implementation details (for AI/developers)
+- **[docs/](docs/)** - Technical documentation on GPU implementation, bug fixes, and analysis
