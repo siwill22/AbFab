@@ -25,8 +25,9 @@ projection:
                                # For NSIDC EPSG:3031 (Antarctic), use lat_standard: 71
                                # If omitted, defaults to lat_limit
   projected_spacing: '2000e'   # 2 km spacing in projected coordinates
+  geographic_spacing: '2m'     # 5 arc-minute spacing for inverse projection output
   output_projected: true       # Save projected output
-  output_geographic: false     # Skip geographic (inverse projection issues)
+  output_geographic: true      # Save geographic output via inverse projection
 
 # Abyssal hill parameters
 abyssal_hills:
