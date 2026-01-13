@@ -1806,26 +1806,27 @@ def reproject_grid_to_mercator(grid, lat_limits=[-70, 70], projected_spacing='5k
     return grid_proj
 
 
-def reproject_grid_from_mercator(grid, target_lon, target_lat):
+def reproject_grid_from_mercator(grid, spacing_deg='5m'):
     """
     Reproject a Mercator grid back to lon-lat coordinates.
 
     Parameters:
     -----------
     grid : xr.DataArray
-        Grid in Mercator projection (x, y in meters)
-    target_lon : np.ndarray
-        Target longitude coordinates (1D array)
-    target_lat : np.ndarray
-        Target latitude coordinates (1D array)
+        Mercator-projected grid
+    spacing_deg : str, optional
+        Grid spacing for geographic output (e.g., '5m' = 5 arc-minutes)
+        Default: '5m'
 
     Returns:
     --------
     grid_geo : xr.DataArray
-        Grid reprojected to lon-lat coordinates
+        Grid reprojected to geographic lon-lat coordinates
 
     Notes:
     ------
+    - Uses same projection string as forward projection but with inverse=True
+    - Requires grid.attrs to contain 'source_bounds' from forward projection
     - Inverse of reproject_grid_to_mercator()
     - Uses PyGMT for accurate inverse projection
     """
@@ -1835,28 +1836,21 @@ def reproject_grid_from_mercator(grid, target_lon, target_lat):
     if 'source_bounds' in grid.attrs:
         region_geo = grid.attrs['source_bounds']
     else:
-        # Estimate from data if not available
         raise ValueError("Grid missing 'source_bounds' attribute. Cannot reproject.")
-
-    # Create target geographic region
-    lon_min, lon_max = float(target_lon.min()), float(target_lon.max())
-    lat_min, lat_max = float(target_lat.min()), float(target_lat.max())
-
-    # Calculate target spacing
-    lon_spacing = float(target_lon[1] - target_lon[0])
-    lat_spacing = float(target_lat[1] - target_lat[0])
-    spacing_deg = f"{lon_spacing}/{lat_spacing}"
 
     # Mercator projection (inverse)
     projection = "m0/0/1:1"  # Same as forward projection
 
     # Reproject back to geographic
+    # CRITICAL: Must use center=True and scaling=True (same as forward projection)
     grid_geo = pygmt.grdproject(
         grid=grid,
         projection=projection,
-        region=[lon_min, lon_max, lat_min, lat_max],
+        region=region_geo,
         spacing=spacing_deg,
-        inverse=True  # Inverse projection
+        inverse=True,  # Inverse projection
+        center=True,
+        scaling=True
     )
 
     return grid_geo
@@ -2019,6 +2013,87 @@ def reproject_grid_to_polar_stereo(grid, pole='north', lat_limit=71, lat_standar
     return grid_proj
 
 
+def inverse_reproject_polar_stereo_to_geographic(grid_proj, spacing_deg='5m'):
+    """
+    Inverse reproject a polar stereographic grid back to geographic coordinates.
+
+    Uses the projection parameters stored in the grid attributes from the
+    forward projection.
+
+    Parameters:
+    -----------
+    grid_proj : xr.DataArray
+        Projected grid with polar stereographic coordinates
+        Must have projection metadata in attributes
+    spacing_deg : str, optional
+        Grid spacing for geographic output (e.g., '5m' = 5 arc-minutes)
+        Default: '5m'
+
+    Returns:
+    --------
+    grid_geo : xr.DataArray
+        Grid reprojected back to geographic lon-lat coordinates
+
+    Notes:
+    ------
+    - Uses same projection string as forward projection but with inverse=True
+    - Requires grid_proj.attrs to contain: 'pole', 'lat_limit', 'lat_standard', 'source_bounds'
+    - May produce edge artifacts due to PyGMT inverse projection limitations
+    """
+    import pygmt
+
+    # Extract projection parameters from grid attributes
+    pole = grid_proj.attrs.get('pole')
+    lat_limit = grid_proj.attrs.get('lat_limit')
+    lat_standard = grid_proj.attrs.get('lat_standard')
+    source_bounds = grid_proj.attrs.get('source_bounds')
+
+    if pole is None or lat_standard is None:
+        raise ValueError("Grid must have 'pole' and 'lat_standard' attributes from forward projection")
+
+    # Reconstruct projection parameters
+    if pole.lower() == 'north':
+        lat_pole = 90
+        lat_standard_signed = lat_standard
+    elif pole.lower() == 'south':
+        lat_pole = -90
+        lat_standard_signed = -lat_standard
+    else:
+        raise ValueError(f"Invalid pole: {pole}")
+
+    # Use same projection string as forward projection
+    projection = f"s0/{lat_pole}/{lat_standard_signed}/1:1"
+
+    # Use original geographic bounds if available
+    if source_bounds is not None:
+        region_geo = source_bounds
+    else:
+        # Fallback: determine from pole and lat_limit
+        if pole.lower() == 'north':
+            region_geo = [-180, 180, abs(lat_limit), 90]
+        else:
+            region_geo = [-180, 180, -90, -abs(lat_limit)]
+
+    # Apply inverse projection
+    grid_geo = pygmt.grdproject(
+        grid=grid_proj,
+        projection=projection,
+        region=region_geo,
+        spacing=spacing_deg,
+        inverse=True,
+        center=True,
+        scaling=True
+    )
+
+    # Add metadata
+    grid_geo.attrs['projection'] = 'geographic'
+    grid_geo.attrs['units'] = 'degrees'
+    grid_geo.attrs['source_projection'] = grid_proj.attrs.get('projection', 'polar_stereographic')
+    grid_geo.attrs['source_epsg'] = grid_proj.attrs.get('projection_epsg')
+
+    return grid_geo
+
+
 def run_complete_bathymetry_workflow_projected(config):
     """
     Complete bathymetry generation workflow using PROJECTED coordinates (Mercator).
@@ -2155,10 +2230,6 @@ def run_complete_bathymetry_workflow_projected(config):
         sed_da_geo = None
         if verbose:
             print("  No sediment")
-
-    # Store original geographic coordinates for inverse projection
-    original_lon = age_da_geo.lon.values
-    original_lat = age_da_geo.lat.values
 
     # ========================================================================
     # REPROJECT TO PROJECTED COORDINATES
@@ -2379,28 +2450,45 @@ def run_complete_bathymetry_workflow_projected(config):
     if output_geographic:
         if verbose:
             print("\nReprojecting back to geographic coordinates...")
+            print("  Warning: Inverse projection may produce edge artifacts")
 
-        # Clip original coords to lat_limits
-        lat_mask = (original_lat >= lat_limits[0]) & (original_lat <= lat_limits[1])
-        target_lat = original_lat[lat_mask]
-        target_lon = original_lon
+        try:
+            # Get geographic spacing (used for both projection types)
+            geographic_spacing = proj_config.get('geographic_spacing', '5m')
 
-        complete_grid_geo = reproject_grid_from_mercator(
-            complete_grid_proj, target_lon, target_lat
-        )
+            if projection_type == 'mercator':
+                # Mercator inverse projection
+                complete_grid_geo = reproject_grid_from_mercator(
+                    complete_grid_proj, spacing_deg=geographic_spacing
+                )
 
-        complete_grid_geo.attrs['units'] = 'meters'
-        complete_grid_geo.attrs['description'] = 'Synthetic ocean floor bathymetry (reprojected from Mercator)'
+            elif projection_type == 'polar_stereo':
+                # Polar stereographic inverse projection
+                complete_grid_geo = inverse_reproject_polar_stereo_to_geographic(
+                    complete_grid_proj, spacing_deg=geographic_spacing
+                )
 
-        output_nc_geo = config['output']['netcdf']
-        if verbose:
-            print(f"\nSaving geographic grid: {output_nc_geo}")
+            else:
+                raise ValueError(f"Unknown projection type: {projection_type}")
 
-        complete_grid_geo.to_netcdf(output_nc_geo)
-        results['geographic'] = complete_grid_geo
+            complete_grid_geo.attrs['units'] = 'meters'
+            complete_grid_geo.attrs['description'] = f'Synthetic ocean floor bathymetry (reprojected from {projection_type})'
 
-        if verbose:
-            print(f"  ✓ Saved {complete_grid_geo.shape} grid")
+            output_nc_geo = config['output']['netcdf']
+            if verbose:
+                print(f"\nSaving geographic grid: {output_nc_geo}")
+
+            complete_grid_geo.to_netcdf(output_nc_geo)
+            results['geographic'] = complete_grid_geo
+
+            if verbose:
+                print(f"  ✓ Saved {complete_grid_geo.shape} grid")
+                print(f"  Depth range: {float(complete_grid_geo.min()):.0f} to {float(complete_grid_geo.max()):.0f} m")
+
+        except Exception as e:
+            if verbose:
+                print(f"  ⚠ Inverse reprojection failed: {e}")
+                print("  Skipping geographic output")
 
     # ========================================================================
     # SUMMARY
