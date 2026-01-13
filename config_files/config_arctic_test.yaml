@@ -1,0 +1,74 @@
+# AbFab Configuration - Arctic Polar Stereographic Test
+# North Pole region (71°N to 90°N)
+
+input:
+  #age_file: '/Users/simon/Data/AgeGrids/2020/age.2020.1.GeeK2007.6m.nc'
+  age_file: '/Users/simon/GIT/paleomap2/M2021_v1p1/masked/M2021_v1p1_seafloor_age_mask_465.0Ma.nc'
+  #sediment_file: '/Users/simon/GIT/pyBacktrack/pybacktrack/bundle_data/sediment_thickness/GlobSed.nc'
+  #constant_sediment: null
+  sediment_file: null
+
+region:
+  lon_min: -180
+  lon_max: 180
+  lat_min: -90      # From 71°N to pole
+  lat_max: -60
+  spacing: '6m'    # Coarse spacing for geographic input
+
+# Polar Stereographic Projection
+projection:
+  enabled: true
+  type: 'polar_stereo'
+  pole: 'south'                # South Pole
+  lat_limit: -60               # DATA BOUNDARY: Extract data from -90°S to -60°S
+  lat_standard: 71             # PROJECTION PARAMETER: Standard parallel (latitude of true scale, always positive)
+                               # For NSIDC EPSG:3031 (Antarctic), use lat_standard: 71
+                               # If omitted, defaults to lat_limit
+  projected_spacing: '2000e'   # 2 km spacing in projected coordinates
+  geographic_spacing: '2m'     # 5 arc-minute spacing for inverse projection output
+  output_projected: true       # Save projected output
+  output_geographic: true      # Save geographic output via inverse projection
+
+# Abyssal hill parameters
+abyssal_hills:
+  H: 250.0              # RMS height (m)
+  lambda_n: 5.0         # Cross-axis wavelength (km)
+  lambda_s: 40.0        # Along-axis wavelength (km)
+  D: 2.2                # Fractal dimension
+  filter_type: 'gaussian'
+
+# Subsidence model
+subsidence:
+  model: 'GDH1'
+
+# Sediment handling
+sediment:
+  mode: 'drape'
+  diffusion: 0.3
+
+# Optimization settings
+optimization:
+  enabled: true
+  azimuth_bins: 36
+  sediment_bins: 5
+  spreading_rate_bins: 5
+  sediment_range: [0, 1000]
+  spreading_rate_range: [0, 150]
+
+# Parallel processing (not used for single-pass projected workflow)
+parallel:
+  num_cpus: 4
+  chunk_size: 100
+  chunk_pad: 20
+
+# Output settings
+output:
+  netcdf: 'output/test_antarctic.nc'
+  figure: 'output/test_antarctic.png'
+  dpi: 150
+  verbose: true
+
+# Advanced settings
+advanced:
+  random_seed: 42
+  timeout: 3600

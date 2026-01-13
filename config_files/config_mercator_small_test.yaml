@@ -1,0 +1,64 @@
+# AbFab - Small Mercator Test Configuration
+# ==========================================
+# Quick test of projected coordinate workflow with small region
+
+input:
+  age_file: '/Users/simon/Data/AgeGrids/2020/age.2020.1.GeeK2007.6m.nc'
+  sediment_file: '/Users/simon/GIT/pyBacktrack/pybacktrack/bundle_data/sediment_thickness/GlobSed.nc'
+  # constant_sediment: 50.0
+
+region:
+  # Small Pacific region for quick testing
+  lon_min: -150
+  lon_max: -140
+  lat_min: 10
+  lat_max: 20
+  spacing: '15m'  # Coarse spacing for speed
+
+projection:
+  enabled: true
+  type: 'mercator'
+  lat_limits: [-70, 70]
+
+  # Grid spacing in projected coordinates
+  # For Mercator (meters): '5000e' or '5000' (5 km), '10000e' (10 km), etc.
+  # Note: Use 'e' suffix for meters, or plain number
+  projected_spacing: '5000e'  # 5 km = 5000 meters
+
+  output_projected: true
+  output_geographic: true
+
+abyssal_hills:
+  H: 250.0
+  lambda_n: 3.0
+  lambda_s: 30.0
+  D: 2.2
+  filter_type: 'gaussian'
+
+subsidence:
+  model: 'GDH1'
+
+sediment:
+  mode: 'drape'  # Simple mode for testing
+  diffusion: 0.3
+
+optimization:
+  enabled: true
+  azimuth_bins: 18  # Reduced for speed
+  sediment_bins: 5
+  spreading_rate_bins: 5
+
+parallel:
+  num_cpus: 4
+  chunk_size: 50
+  chunk_pad: 10
+
+output:
+  netcdf: 'output/test_mercator_small.nc'
+  figure: 'output/test_mercator_small.png'
+  dpi: 150
+  verbose: true
+
+advanced:
+  random_seed: 42
+  timeout: 300
