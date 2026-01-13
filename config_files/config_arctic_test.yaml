@@ -52,6 +52,8 @@ optimization:
   azimuth_bins: 36
   sediment_bins: 5
   spreading_rate_bins: 5
+  sediment_range: [0, 1000]
+  spreading_rate_range: [0, 150]
 
 # Parallel processing (not used for single-pass projected workflow)
 parallel:
