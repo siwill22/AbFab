@@ -572,6 +572,10 @@ def generate_bathymetry_gpu(seafloor_age: np.ndarray,
                             azimuth_bins: int = 36,
                             sediment_bins: int = 10,
                             spreading_rate_bins: int = 20,
+                            sediment_range: Optional[tuple] = None,
+                            spreading_rate_range: Optional[tuple] = None,
+                            load_bin_config: Optional[str] = None,
+                            save_bin_config: Optional[str] = None,
                             filter_size: int = 25,
                             tile_size: int = 500,
                             verbose: bool = True) -> np.ndarray:
@@ -648,21 +652,58 @@ def generate_bathymetry_gpu(seafloor_age: np.ndarray,
     
     spreading_rate_cpu = np.where(np.isnan(spreading_rate_cpu), sr_median, spreading_rate_cpu)
 
-    # Handle sediment thickness (may be None)
-    if sediment_thickness is not None:
-        sed_min = float(np.nanmin(sediment_thickness))
-        sed_max = float(np.nanmax(sediment_thickness))
-    else:
-        # No sediment - use dummy value (won't affect results if sediment_mode='none')
-        sed_min = 0.0
-        sed_max = 0.0
+    # ========================================================================
+    # BIN RANGE DETERMINATION (supports load/manual/auto-detect)
+    # ========================================================================
+    import os
+    import yaml
 
-    if verbose:
-        print(f"  Spreading rate range: {sr_min:.1f} - {sr_max:.1f} mm/yr")
-        if sediment_thickness is not None:
-            print(f"  Sediment range: {sed_min:.1f} - {sed_max:.1f} m")
+    # Check if loading from saved bin config
+    if load_bin_config and os.path.exists(load_bin_config):
+        with open(load_bin_config, 'r') as f:
+            bin_cfg = yaml.safe_load(f)
+
+        sed_min = bin_cfg['sediment']['min']
+        sed_max = bin_cfg['sediment']['max']
+        sr_min = bin_cfg['spreading_rate']['min']
+        sr_max = bin_cfg['spreading_rate']['max']
+
+        if verbose:
+            print(f"  ✓ Loaded bin config from: {load_bin_config}")
+            print(f"  Sediment range: {sed_min:.1f} - {sed_max:.1f} m (from config)")
+            print(f"  Spreading rate range: {sr_min:.1f} - {sr_max:.1f} mm/yr (from config)")
+
+    else:
+        # Manual or auto-detect ranges
+
+        # Sediment range
+        if sediment_range is not None:
+            sed_min, sed_max = sediment_range
+            if verbose:
+                print(f"  Sediment range: {sed_min:.1f} - {sed_max:.1f} m (manual)")
         else:
-            print(f"  Sediment: None")
+            # Auto-detect (current behavior)
+            if sediment_thickness is not None:
+                sed_min = float(np.nanmin(sediment_thickness))
+                sed_max = float(np.nanmax(sediment_thickness))
+                if verbose:
+                    print(f"  Sediment range: {sed_min:.1f} - {sed_max:.1f} m (auto-detected)")
+            else:
+                # No sediment - use dummy value
+                sed_min = 0.0
+                sed_max = 0.0
+                if verbose:
+                    print(f"  Sediment: None")
+
+        # Spreading rate range
+        if spreading_rate_range is not None:
+            sr_min, sr_max = spreading_rate_range
+            if verbose:
+                print(f"  Spreading rate range: {sr_min:.1f} - {sr_max:.1f} mm/yr (manual)")
+        else:
+            # Auto-detect (already calculated above)
+            if verbose:
+                print(f"  Spreading rate range: {sr_min:.1f} - {sr_max:.1f} mm/yr (auto-detected)")
 
     # Create bin levels
     azimuth_levels = torch.linspace(-np.pi, np.pi, azimuth_bins, device=DEVICE)
@@ -688,7 +729,37 @@ def generate_bathymetry_gpu(seafloor_age: np.ndarray,
     t_fb_end = time.time()
     if verbose:
         print(f"  Filter bank generation: {t_fb_end - t_fb_start:.2f}s")
-    
+
+    # ========================================================================
+    # SAVE BIN CONFIGURATION (if requested)
+    # ========================================================================
+    if save_bin_config:
+        bin_config = {
+            'sediment': {
+                'min': float(sed_min),
+                'max': float(sed_max),
+                'bins': int(sediment_bins),
+                'levels': sediment_levels.cpu().numpy().tolist()
+            },
+            'spreading_rate': {
+                'min': float(sr_min),
+                'max': float(sr_max),
+                'bins': int(spreading_rate_bins),
+                'levels': spreading_rate_levels.cpu().numpy().tolist()
+            },
+            'azimuth': {
+                'bins': int(azimuth_bins),
+                'levels': azimuth_levels.cpu().numpy().tolist()
+            }
+        }
+
+        os.makedirs(os.path.dirname(save_bin_config) or '.', exist_ok=True)
+        with open(save_bin_config, 'w') as f:
+            yaml.dump(bin_config, f, default_flow_style=False)
+
+        if verbose:
+            print(f"  ✓ Saved bin config to: {save_bin_config}")
+
     # Calculate azimuth on CPU (will tile later)
     if lat_coords is not None:
         import AbFab as af
@@ -847,6 +918,10 @@ def generate_complete_bathymetry_gpu(seafloor_age: np.ndarray,
                                       azimuth_bins: int = 36,
                                       sediment_bins: int = 10,
                                       spreading_rate_bins: int = 20,
+                                      sediment_range: Optional[tuple] = None,
+                                      spreading_rate_range: Optional[tuple] = None,
+                                      load_bin_config: Optional[str] = None,
+                                      save_bin_config: Optional[str] = None,
                                       tile_size: int = 500,
                                       verbose: bool = True) -> np.ndarray:
     """
@@ -909,6 +984,10 @@ def generate_complete_bathymetry_gpu(seafloor_age: np.ndarray,
         seafloor_age, sediment_thickness, params, grid_spacing_km,
         random_field, lat_coords,
         azimuth_bins, sediment_bins, spreading_rate_bins,
+        sediment_range=sediment_range,
+        spreading_rate_range=spreading_rate_range,
+        load_bin_config=load_bin_config,
+        save_bin_config=save_bin_config,
         tile_size=tile_size,
         verbose=verbose
     )
@@ -1039,6 +1118,10 @@ def run_gpu_bathymetry_workflow(config: Dict) -> np.ndarray:
         azimuth_bins=config['optimization']['azimuth_bins'],
         sediment_bins=config['optimization']['sediment_bins'],
         spreading_rate_bins=config['optimization']['spreading_rate_bins'],
+        sediment_range=config['optimization'].get('sediment_range'),
+        spreading_rate_range=config['optimization'].get('spreading_rate_range'),
+        load_bin_config=config['optimization'].get('load_bin_config'),
+        save_bin_config=config['optimization'].get('save_bin_config'),
         tile_size=tile_size,
         verbose=verbose
     )
@@ -1387,6 +1470,10 @@ def run_complete_bathymetry_workflow_projected_gpu(config):
         azimuth_bins=config['optimization']['azimuth_bins'],
         sediment_bins=config['optimization']['sediment_bins'],
         spreading_rate_bins=config['optimization']['spreading_rate_bins'],
+        sediment_range=config['optimization'].get('sediment_range'),
+        spreading_rate_range=config['optimization'].get('spreading_rate_range'),
+        load_bin_config=config['optimization'].get('load_bin_config'),
+        save_bin_config=config['optimization'].get('save_bin_config'),
         verbose=verbose
     )
 

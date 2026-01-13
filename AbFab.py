@@ -4,6 +4,8 @@ from scipy.ndimage import convolve
 from scipy.signal import oaconvolve, fftconvolve
 from scipy.special import kv  # Modified Bessel function for von Kármán filter
 import xarray as xr
+import os
+import yaml
 
 # Optional tqdm for progress bars
 try:
@@ -746,7 +748,8 @@ def generate_bathymetry_spatial_filter(seafloor_age, sediment_thickness, params,
                                        sediment_range=None, spreading_rate_range=None, lat_coords=None,
                                        sediment_levels=None, spreading_rate_levels=None,
                                        spreading_rate_fill_value=None,
-                                       azimuth_field=None, spreading_rate_field=None):
+                                       azimuth_field=None, spreading_rate_field=None,
+                                       load_bin_config=None, save_bin_config=None):
     """
     Generate synthetic bathymetry using a spatially varying filter based on von Kármán model.
 
@@ -887,6 +890,26 @@ def generate_bathymetry_spatial_filter(seafloor_age, sediment_thickness, params,
 
     # Fill NaN values
     spreading_rate = np.where(np.isnan(spreading_rate), fill_value, spreading_rate)
+
+    # ========================================================================
+    # BIN RANGE DETERMINATION (supports load/manual/auto-detect)
+    # ========================================================================
+    # Check if loading from saved bin config
+    if load_bin_config and os.path.exists(load_bin_config):
+        with open(load_bin_config, 'r') as f:
+            bin_cfg = yaml.safe_load(f)
+
+        # Override sediment_range and spreading_rate_range from loaded config
+        sediment_range = (bin_cfg['sediment']['min'], bin_cfg['sediment']['max'])
+        spreading_rate_range = (bin_cfg['spreading_rate']['min'], bin_cfg['spreading_rate']['max'])
+
+        # Can also override bins if desired (optional)
+        # sediment_bins = bin_cfg['sediment']['bins']
+        # spreading_rate_bins = bin_cfg['spreading_rate']['bins']
+        # azimuth_bins = bin_cfg['azimuth']['bins']
+
+        # Note: We don't print verbose messages here since there's no verbose parameter
+        # in this function. The calling code should handle verbose output.
 
     # Bin spreading rate
     # Use pre-computed levels if provided (best for consistency across chunks)
@@ -1067,6 +1090,36 @@ def generate_bathymetry_spatial_filter(seafloor_age, sediment_thickness, params,
 
     # Interpolate along azimuth (x) axis
     bathymetry = c0 * (1 - az_frac) + c1 * az_frac
+
+    # ========================================================================
+    # SAVE BIN CONFIGURATION (if requested)
+    # ========================================================================
+    if save_bin_config:
+        bin_config = {
+            'sediment': {
+                'min': float(sediment_min),
+                'max': float(sediment_max),
+                'bins': int(sediment_bins),
+                'levels': sediment_levels.tolist()
+            },
+            'spreading_rate': {
+                'min': float(sr_min),
+                'max': float(sr_max),
+                'bins': int(spreading_rate_bins),
+                'levels': spreading_rate_levels.tolist()
+            },
+            'azimuth': {
+                'bins': int(azimuth_bins),
+                'levels': azimuth_angles.tolist()
+            }
+        }
+
+        os.makedirs(os.path.dirname(save_bin_config) or '.', exist_ok=True)
+        with open(save_bin_config, 'w') as f:
+            yaml.dump(bin_config, f, default_flow_style=False)
+
+        # Note: We don't print verbose messages here since there's no verbose parameter
+        # in this function. The calling code should handle verbose output.
 
     return bathymetry
 
@@ -1578,7 +1631,8 @@ def process_complete_bathymetry_chunk(coord, age_dataarray, sed_dataarray, rand_
                                        spreading_rate_bins, sediment_range=None,
                                        spreading_rate_range=None, sediment_levels=None,
                                        spreading_rate_levels=None, spreading_rate_fill_value=None,
-                                       azimuth_dataarray=None, spreading_rate_dataarray=None):
+                                       azimuth_dataarray=None, spreading_rate_dataarray=None,
+                                       load_bin_config=None, save_bin_config=None):
     """
     Process a single chunk of complete bathymetry.
 
@@ -1701,7 +1755,9 @@ def process_complete_bathymetry_chunk(coord, age_dataarray, sed_dataarray, rand_
         spreading_rate_fill_value=spreading_rate_fill_value,
         lat_coords=chunk_lat_coords,
         azimuth_field=chunk_azimuth.data if chunk_azimuth is not None else None,
-        spreading_rate_field=chunk_spreading_rate.data if chunk_spreading_rate is not None else None
+        spreading_rate_field=chunk_spreading_rate.data if chunk_spreading_rate is not None else None,
+        load_bin_config=load_bin_config,
+        save_bin_config=save_bin_config
     )
 
     # Trim padding and return
@@ -2316,6 +2372,10 @@ def run_complete_bathymetry_workflow_projected(config):
     spreading_rate_bins = config['optimization']['spreading_rate_bins']
     sediment_bins = config['optimization']['sediment_bins']
 
+    # Extract bin consistency parameters
+    load_bin_config = config['optimization'].get('load_bin_config')
+    save_bin_config = config['optimization'].get('save_bin_config')
+
     sr_range = sr_max_global - sr_min_global
     if sr_range < 1e-6 or spreading_rate_bins == 1:
         spreading_rate_levels_global = np.array([np.mean([sr_min_global, sr_max_global])])
@@ -2377,7 +2437,9 @@ def run_complete_bathymetry_workflow_projected(config):
         spreading_rate_fill_value=sr_median_global,
         lat_coords=None,  # NO spherical correction!
         azimuth_field=azimuth_da.data,
-        spreading_rate_field=spreading_rate_da.data
+        spreading_rate_field=spreading_rate_da.data,
+        load_bin_config=load_bin_config,
+        save_bin_config=save_bin_config
     )
 
     elapsed = time.time() - start_time
@@ -2755,6 +2817,10 @@ def run_complete_bathymetry_workflow(config):
     spreading_rate_bins = config['optimization']['spreading_rate_bins']
     sediment_bins = config['optimization']['sediment_bins']
 
+    # Extract bin consistency parameters
+    load_bin_config = config['optimization'].get('load_bin_config')
+    save_bin_config = config['optimization'].get('save_bin_config')
+
     if verbose:
         print("\nComputing global bin levels...")
 
@@ -2815,7 +2881,9 @@ def run_complete_bathymetry_workflow(config):
         spreading_rate_levels=spreading_rate_levels_global,
         spreading_rate_fill_value=sr_median_global,
         azimuth_dataarray=azimuth_da,
-        spreading_rate_dataarray=spreading_rate_da
+        spreading_rate_dataarray=spreading_rate_da,
+        load_bin_config=load_bin_config,
+        save_bin_config=save_bin_config
     ) for coord in tqdm(coords, desc="Processing chunks", unit="chunk", disable=not verbose))
 
     elapsed = time.time() - start_time
