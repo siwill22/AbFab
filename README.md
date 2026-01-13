@@ -3,6 +3,14 @@ Generate Synthetic Abyssal Hill Fabric
 
 Code to generate maps of synthetic abyssal hill fabric for ocean basins following the method described by Goff and Arbic (2010), *Ocean Modelling*, doi:[10.1016/j.ocemod.2009.10.001](https://doi.org/10.1016/j.ocemod.2009.10.001).
 
+## Preamble
+
+The code in this repository is an experiment in using Claude Code to generate a useful tool. The goal was to produce maps of synthetic abyssal hill fabric for seafloor age grids of any time in geological history, of the type produced for example by https://github.com/siwill22/agegrid-0.1.
+
+Everything from here onwards is AI-generated docs......
+
+
+
 ## Quick Start
 
 ### Command Line (Recommended)
