@@ -3,7 +3,7 @@
 
 input:
   #age_file: '/Users/simon/Data/AgeGrids/2020/age.2020.1.GeeK2007.6m.nc'
-  age_file: '/Users/simon/GIT/paleomap2/M2021_v1p1/masked/M2021_v1p1_seafloor_age_mask_465.0Ma.nc'
+  age_file: '/Users/simon/GIT/paleomap2/M2021_v1p1/masked/M2021_v1p1_seafloor_age_mask_150.0Ma.nc'
   sediment_file: null #'/Users/simon/GIT/pyBacktrack/pybacktrack/bundle_data/sediment_thickness/GlobSed.nc'
   #constant_sediment: null
 
@@ -12,14 +12,14 @@ region:
   lon_max: 180
   lat_min: -75
   lat_max: 75
-  spacing: '6m'  # Coarser spacing for geographic input (0.5 degrees)
+  spacing: '2m'  # Coarser spacing for geographic input (0.5 degrees)
 
 # Projection settings
 projection:
   enabled: true
   type: 'mercator'
   lat_limits: [-75, 75]
-  projected_spacing: '2000e'  # 5 km spacing in projected coordinates
+  projected_spacing: '4000e'  # 5 km spacing in projected coordinates
   geographic_spacing: '2m'
   output_projected: true
   output_geographic: true  # Skip geographic output (inverse projection has issues)
@@ -58,8 +58,8 @@ parallel:
 
 # Output settings
 output:
-  netcdf: 'output/test_mercator_large.nc'
-  figure: 'output/test_mercator_large.png'
+  netcdf: 'output/test_mercator_large_150Ma.nc'
+  figure: 'output/test_mercator_large_150Ma.png'
   dpi: 150
   verbose: true
 

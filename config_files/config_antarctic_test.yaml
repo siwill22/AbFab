@@ -11,17 +11,17 @@ input:
 region:
   lon_min: -180
   lon_max: 180
-  lat_min: 60      # From 71°N to pole
-  lat_max: 90
+  lat_min: -90      # From 71°N to pole
+  lat_max: -60
   spacing: '2m'    # Coarse spacing for geographic input
 
 # Polar Stereographic Projection
 projection:
   enabled: true
   type: 'polar_stereo'
-  pole: 'north'                # South Pole
-  lat_limit: 60               # DATA BOUNDARY: Extract data from -90°S to -60°S
-  lat_standard: 71             # PROJECTION PARAMETER: Standard parallel (latitude of true scale, always positive)
+  pole: 'south'                # South Pole
+  lat_limit: -60               # DATA BOUNDARY: Extract data from -90°S to -60°S
+  lat_standard: -71             # PROJECTION PARAMETER: Standard parallel (latitude of true scale, always positive)
                                # For NSIDC EPSG:3031 (Antarctic), use lat_standard: 71
                                # If omitted, defaults to lat_limit
   projected_spacing: '2000e'   # 2 km spacing in projected coordinates
@@ -63,8 +63,8 @@ parallel:
 
 # Output settings
 output:
-  netcdf: 'output/test_arctic.nc'
-  figure: 'output/test_arctic.png'
+  netcdf: 'output/test_antarctic.nc'
+  figure: 'output/test_antarctic.png'
   dpi: 150
   verbose: true
 
